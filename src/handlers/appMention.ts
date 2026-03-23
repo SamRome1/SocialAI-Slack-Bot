@@ -1,0 +1,136 @@
+import type { App } from '@slack/bolt'
+import { downloadSlackFile } from '../services/slackFiles'
+import { extractFrames } from '../services/frameExtractor'
+import { analyzeMedia } from '../services/claude'
+import { buildPlatformPickerBlocks, buildAnalyzingBlocks, buildAnalysisBlocks } from '../formatters/slackBlocks'
+import type { BrandContext, Platform } from '../types'
+import { PLATFORM_DEFAULT_FORMAT } from '../types'
+
+const SUPPORTED_TYPES = new Set([
+  'image/jpeg', 'image/png', 'image/webp',
+  'video/mp4', 'video/quicktime', 'video/webm',
+])
+
+interface SlackFile {
+  id: string
+  name?: string
+  mimetype?: string
+  url_private_download?: string
+}
+
+function getBrandContext(): BrandContext {
+  return {
+    brand_name: process.env.BRAND_NAME ?? 'Supabase',
+    niche: process.env.BRAND_NICHE ?? 'developer tools and infrastructure',
+    tone: process.env.BRAND_TONE ?? 'professional and technical',
+  }
+}
+
+export function registerAppMentionHandler(app: App) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app.event('app_mention', async ({ event, client, logger }: any) => {
+    const channel = event.channel as string
+    const threadTs = (event.thread_ts ?? event.ts) as string
+    const files: SlackFile[] = event.files ?? []
+
+    // Filter to supported file types
+    const supported = files.filter((f) => SUPPORTED_TYPES.has(f.mimetype ?? ''))
+
+    if (supported.length === 0) {
+      await client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: 'Please attach a video or image and tag me again. Supported: MP4, MOV, WebM, JPG, PNG, WebP.',
+      })
+      return
+    }
+
+    const file = supported[0]
+
+    // Ask which platform
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: 'What platform is this content for?',
+      blocks: buildPlatformPickerBlocks(file.id, channel, threadTs),
+    })
+  })
+}
+
+export function registerPlatformActionHandler(app: App) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app.action(/^platform_select:/, async ({ ack, action, client, logger, body }: any) => {
+    await ack()
+
+    try {
+      const parts = (action.value as string).split('|')
+      const [fileId, channelId, threadTs, platformStr] = parts
+      const platform = platformStr as Platform
+      const format = PLATFORM_DEFAULT_FORMAT[platform] ?? 'Video'
+
+      const messageTs = body.message?.ts as string | undefined
+      if (messageTs) {
+        await client.chat.update({
+          channel: channelId,
+          ts: messageTs,
+          text: `Analyzing for ${platform} ${format}...`,
+          blocks: buildAnalyzingBlocks(platform, format),
+        })
+      }
+
+      runAnalysis(client, fileId, channelId, threadTs, platform, format, logger).catch(
+        (err: unknown) => logger.error('runAnalysis error:', err),
+      )
+    } catch (err) {
+      logger.error('platformAction error:', err)
+    }
+  })
+}
+
+async function runAnalysis(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  client: any,
+  fileId: string,
+  channelId: string,
+  threadTs: string,
+  platform: Platform,
+  format: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  logger: any,
+) {
+  try {
+    // Get file info + download
+    const infoRes = await fetch(`https://slack.com/api/files.info?file=${fileId}`, {
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+    })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const infoJson = await infoRes.json() as any
+    if (!infoJson.ok) throw new Error(`files.info failed: ${infoJson.error}`)
+
+    const url: string = infoJson.file.url_private_download
+    const mimetype: string = infoJson.file.mimetype ?? 'video/mp4'
+
+    const fileBuffer = await downloadSlackFile(url, process.env.SLACK_BOT_TOKEN!)
+    const { frames, mediaType } = await extractFrames(fileBuffer, mimetype)
+
+    const analysis = await analyzeMedia(frames, mediaType, platform, format, getBrandContext())
+
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: `Analysis complete — Overall score: ${analysis.overall_score}/100`,
+      blocks: buildAnalysisBlocks(analysis, platform, format),
+    })
+  } catch (err) {
+    logger.error('runAnalysis error:', err)
+    // Only surface user-friendly messages, not internal error details
+    const userMessage = err instanceof Error && err.message.startsWith('File')
+      ? err.message
+      : 'Analysis failed. Please try again with a supported video or image.'
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: `:x: ${userMessage}`,
+    })
+  }
+}
