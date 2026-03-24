@@ -84,9 +84,17 @@ export function registerPlatformActionHandler(app: App) {
         })
       }
 
-      runAnalysis(client, fileId, channelId, threadTs, platform, format, logger).catch(
-        (err: unknown) => logger.error('runAnalysis error:', err),
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Analysis timed out. Try a shorter or smaller video.')), 3 * 60 * 1000),
       )
+      Promise.race([
+        runAnalysis(client, fileId, channelId, threadTs, platform, format, logger),
+        timeout,
+      ]).catch(async (err: unknown) => {
+        logger.error('runAnalysis error:', err)
+        const msg = err instanceof Error ? err.message : 'Analysis failed. Please try again.'
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, text: `:x: ${msg}` })
+      })
     } catch (err) {
       logger.error('platformAction error:', err)
     }
