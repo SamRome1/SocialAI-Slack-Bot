@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { MediaAnalysis, BrandContext } from '../types'
+import type { TopPost } from './socialManager'
 
 const MODEL = 'claude-sonnet-4-6'
 
@@ -15,6 +16,7 @@ export async function analyzeMedia(
   platform: string,
   format: string,
   brand: BrandContext,
+  topPosts: TopPost[] = [],
 ): Promise<MediaAnalysis> {
   const client = getClient()
 
@@ -22,13 +24,18 @@ export async function analyzeMedia(
     ? `You are seeing ${frames.length} frames extracted from a video (opening, middle, end). Evaluate as a video post.`
     : 'You are analyzing a single image/photo.'
 
+  const benchmarkNote = topPosts.length > 0
+    ? `Top ${topPosts.length} performing posts on ${platform} (use as benchmarks for scoring and predictions):
+${topPosts.map((p, i) => `${i + 1}. Format: ${p.format} | Score: ${p.score ?? 'N/A'} | Reach: ${p.reach.toLocaleString()} | Hook: "${p.content.slice(0, 120)}"`).join('\n')}`
+    : `No historical data available — use general ${platform} platform benchmarks for this niche.`
+
   const prompt = `You are a social media content performance analyst for expert creators.
 
 Brand: "${brand.brand_name}" | Niche: ${brand.niche} | Tone: ${brand.tone}
 Platform: ${platform} | Format: ${format}
 ${frameNote}
 
-No historical data available — use general ${platform} platform benchmarks for this niche.
+${benchmarkNote}
 
 Analyze this content and predict its performance. Return ONLY valid JSON:
 {

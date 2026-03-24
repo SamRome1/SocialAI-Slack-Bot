@@ -2,6 +2,7 @@ import type { App } from '@slack/bolt'
 import { downloadSlackFile } from '../services/slackFiles'
 import { extractFrames } from '../services/frameExtractor'
 import { analyzeMedia } from '../services/claude'
+import { getAnalysisContext } from '../services/socialManager'
 import { buildPlatformPickerBlocks, buildAnalyzingBlocks, buildAnalysisBlocks } from '../formatters/slackBlocks'
 import type { BrandContext, Platform } from '../types'
 import { PLATFORM_DEFAULT_FORMAT } from '../types'
@@ -18,11 +19,16 @@ interface SlackFile {
   url_private_download?: string
 }
 
-function getBrandContext(): BrandContext {
+async function getBrandContext(platform: string): Promise<{ brand: BrandContext; topPosts: import('../services/socialManager').TopPost[] }> {
+  const context = await getAnalysisContext(platform)
+  if (context) return { brand: context.brand, topPosts: context.topPosts }
   return {
-    brand_name: process.env.BRAND_NAME ?? 'Supabase',
-    niche: process.env.BRAND_NICHE ?? 'developer tools and infrastructure',
-    tone: process.env.BRAND_TONE ?? 'professional and technical',
+    brand: {
+      brand_name: process.env.BRAND_NAME ?? 'My Brand',
+      niche: process.env.BRAND_NICHE ?? 'content creation',
+      tone: process.env.BRAND_TONE ?? 'professional',
+    },
+    topPosts: [],
   }
 }
 
@@ -113,7 +119,8 @@ async function runAnalysis(
     const fileBuffer = await downloadSlackFile(url, process.env.SLACK_BOT_TOKEN!)
     const { frames, mediaType } = await extractFrames(fileBuffer, mimetype)
 
-    const analysis = await analyzeMedia(frames, mediaType, platform, format, getBrandContext())
+    const { brand, topPosts } = await getBrandContext(platform)
+    const analysis = await analyzeMedia(frames, mediaType, platform, format, brand, topPosts)
 
     await client.chat.postMessage({
       channel: channelId,
