@@ -16,40 +16,42 @@ export interface ExtractResult {
   mediaType: 'image' | 'video'
 }
 
+/**
+ * Extract frames from a file already on disk.
+ * For images: resizes and returns a single frame.
+ * For video: extracts maxFrames frames distributed across the video duration.
+ */
 export async function extractFrames(
-  buffer: Buffer,
+  filePath: string,
   mimetype: string,
   maxFrames = 6,
 ): Promise<ExtractResult> {
   if (mimetype.startsWith('image/')) {
-    return extractImage(buffer)
+    return extractImage(filePath)
   }
-  return extractVideoFrames(buffer, maxFrames)
+  return extractVideoFrames(filePath, maxFrames)
 }
 
-async function extractImage(buffer: Buffer): Promise<ExtractResult> {
-  const resized = await sharp(buffer)
+async function extractImage(filePath: string): Promise<ExtractResult> {
+  const resized = await sharp(filePath)
     .resize({ width: 1280, withoutEnlargement: true })
     .jpeg({ quality: 85 })
     .toBuffer()
   return { frames: [resized.toString('base64')], mediaType: 'image' }
 }
 
-async function extractVideoFrames(buffer: Buffer, maxFrames: number): Promise<ExtractResult> {
-  const tmpDir = path.join(os.tmpdir(), `socialai-${randomUUID()}`)
+async function extractVideoFrames(inputPath: string, maxFrames: number): Promise<ExtractResult> {
+  // Use a separate tmpDir only for the extracted frame JPEGs
+  const tmpDir = path.join(os.tmpdir(), `socialai-frames-${randomUUID()}`)
   await fs.mkdir(tmpDir)
-  const inputPath = path.join(tmpDir, 'input.mp4')
 
   try {
-    await fs.writeFile(inputPath, buffer)
-
     const duration = await getVideoDuration(inputPath)
 
-    // First frame: very early (avoids black frames), last frame: near end
-    // Middle frames distributed evenly so Claude sees the full arc of the video
-    const times: number[] = []
+    // First frame: very early (avoids black frames), last frame: near end.
+    // Middle frames distributed evenly so Claude sees the full arc of the video.
     const startTime = Math.min(0.5, duration * 0.02)
-    times.push(startTime)
+    const times: number[] = [startTime]
 
     for (let i = 1; i < maxFrames - 1; i++) {
       times.push(startTime + (duration * 0.95 - startTime) * (i / (maxFrames - 1)))

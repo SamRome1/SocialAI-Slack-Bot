@@ -1,3 +1,11 @@
+import { createWriteStream } from 'fs'
+import { rm } from 'fs/promises'
+import { pipeline } from 'stream/promises'
+import { Readable } from 'stream'
+import os from 'os'
+import path from 'path'
+import { randomUUID } from 'crypto'
+
 export interface SlackFile {
   buffer: Buffer
   mimetype: string
@@ -36,7 +44,6 @@ export async function getSlackFileInfo(
   const mimetype = file.mimetype ?? 'application/octet-stream'
   const name = file.name ?? 'file'
 
-  // Extract channelId + threadTs from shares
   const shares = file.shares ?? {}
   const allShares = [
     ...Object.entries(shares.private ?? {}),
@@ -48,12 +55,18 @@ export async function getSlackFileInfo(
   return { url, mimetype, name, channelId, threadTs }
 }
 
-export async function downloadSlackFile(url: string, botToken: string, maxSizeMB = 75): Promise<Buffer> {
+/**
+ * Streams the file directly to disk — avoids loading large files into RAM.
+ * Returns the temp file path and a cleanup function.
+ */
+export async function downloadSlackFile(
+  url: string,
+  botToken: string,
+  maxSizeMB = 75,
+): Promise<{ filePath: string; cleanup: () => Promise<void> }> {
   const maxBytes = maxSizeMB * 1024 * 1024
 
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${botToken}` },
-  })
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${botToken}` } })
   if (!res.ok) throw new Error(`File download failed: ${res.status}`)
 
   const contentLength = res.headers.get('content-length')
@@ -61,10 +74,17 @@ export async function downloadSlackFile(url: string, botToken: string, maxSizeMB
     throw new Error(`File too large. Maximum size is ${maxSizeMB} MB for this format.`)
   }
 
-  const arrayBuffer = await res.arrayBuffer()
-  if (arrayBuffer.byteLength > maxBytes) {
-    throw new Error(`File too large. Maximum size is ${maxSizeMB} MB for this format.`)
-  }
+  if (!res.body) throw new Error('No response body from Slack')
 
-  return Buffer.from(arrayBuffer)
+  const tmpPath = path.join(os.tmpdir(), `socialai-dl-${randomUUID()}`)
+  const writeStream = createWriteStream(tmpPath)
+
+  // Stream response body straight to disk — no memory spike
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await pipeline(Readable.fromWeb(res.body as any), writeStream)
+
+  return {
+    filePath: tmpPath,
+    cleanup: async () => { await rm(tmpPath, { force: true }) },
+  }
 }

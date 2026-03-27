@@ -140,11 +140,19 @@ async function runAnalysis(
 
     // Longform YouTube: allow up to 500 MB; all others: 75 MB
     const maxSizeMB = isLongForm ? 500 : 75
-    const fileBuffer = await downloadSlackFile(url, process.env.SLACK_BOT_TOKEN!, maxSizeMB)
+    const { filePath, cleanup } = await downloadSlackFile(url, process.env.SLACK_BOT_TOKEN!, maxSizeMB)
 
     // Longform: 10 frames; short-form: 6 frames
     const maxFrames = isLongForm ? 10 : 6
-    const { frames, mediaType } = await extractFrames(fileBuffer, mimetype, maxFrames)
+    let frames: string[]
+    let mediaType: 'image' | 'video'
+    try {
+      const result = await extractFrames(filePath, mimetype, maxFrames)
+      frames = result.frames
+      mediaType = result.mediaType
+    } finally {
+      await cleanup()
+    }
 
     const { brand, topPosts } = await getBrandContext(platform)
     const inspirationAccounts = getInspirationAccounts(platform)
