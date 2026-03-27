@@ -1,6 +1,7 @@
 import type { App } from '@slack/bolt'
 import { downloadSlackFile } from '../services/slackFiles'
 import { extractFrames } from '../services/frameExtractor'
+import { transcribeVideo } from '../services/transcriber'
 import { analyzeMedia } from '../services/claude'
 import { getAnalysisContext } from '../services/socialManager'
 import { buildPlatformPickerBlocks, buildAnalyzingBlocks, buildAnalysisBlocks } from '../formatters/slackBlocks'
@@ -146,17 +147,22 @@ async function runAnalysis(
     const maxFrames = isLongForm ? 10 : 6
     let frames: string[]
     let mediaType: 'image' | 'video'
+    let transcript: string | null = null
     try {
-      const result = await extractFrames(filePath, mimetype, maxFrames)
-      frames = result.frames
-      mediaType = result.mediaType
+      const [extractResult, transcriptResult] = await Promise.all([
+        extractFrames(filePath, mimetype, maxFrames),
+        mimetype.startsWith('video/') ? transcribeVideo(filePath) : Promise.resolve(null),
+      ])
+      frames = extractResult.frames
+      mediaType = extractResult.mediaType
+      transcript = transcriptResult
     } finally {
       await cleanup()
     }
 
     const { brand, topPosts } = await getBrandContext(platform)
     const inspirationAccounts = getInspirationAccounts(platform)
-    const analysis = await analyzeMedia(frames, mediaType, platform, format, brand, topPosts, inspirationAccounts)
+    const analysis = await analyzeMedia(frames, mediaType, platform, format, brand, topPosts, inspirationAccounts, transcript)
 
     await client.chat.postMessage({
       channel: channelId,

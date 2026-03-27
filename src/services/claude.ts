@@ -28,6 +28,7 @@ function buildShortFormPrompt(
   brand: BrandContext,
   topPosts: TopPost[],
   inspirationAccounts: string[],
+  transcript: string | null,
 ): string {
   const frameNote = mediaType === 'video'
     ? `You are seeing ${frames} frames extracted from a video (covering opening, early hook, mid sections, and near-end). Evaluate as a short-form video post.`
@@ -50,6 +51,9 @@ function buildShortFormPrompt(
     : ''
 
   const contentTypeList = Object.keys(CONTENT_TYPE_SCORING).join(', ')
+  const transcriptNote = transcript
+    ? `\nFull audio transcript:\n"""\n${transcript}\n"""\nUse this transcript as the primary source for understanding what is said, the humor, tone, punchlines, and narrative. The frames show the visuals; the transcript tells you everything spoken.`
+    : ''
 
   return `You are a brutally honest social media content performance analyst for expert creators.
 
@@ -57,6 +61,7 @@ Brand: "${brand.brand_name}" | Niche: ${brand.niche} | Tone: ${brand.tone}
 Platform: ${platform} | Format: ${format}
 ${frameNote}
 ${inspirationNote ? `\n${inspirationNote}\n` : ''}
+${transcriptNote}
 ${benchmarkNote}
 
 STEP 1 — Identify content type before scoring.
@@ -114,6 +119,7 @@ function buildLongFormPrompt(
   brand: BrandContext,
   topPosts: TopPost[],
   inspirationAccounts: string[],
+  transcript: string | null,
 ): string {
   const benchmarkNote = topPosts.length > 0
     ? `Top ${topPosts.length} performing long-form posts on ${platform}:\n${topPosts.map((p, i) => `${i + 1}. Format: ${p.format} | Score: ${p.score ?? 'N/A'} | Reach: ${p.reach.toLocaleString()} | Hook: "${p.content.slice(0, 120)}"`).join('\n')}`
@@ -131,6 +137,10 @@ function buildLongFormPrompt(
   ],`
     : ''
 
+  const transcriptNote = transcript
+    ? `\nFull audio transcript:\n"""\n${transcript}\n"""\nUse this as the primary source for understanding the content, narrative structure, chapter flow, key arguments, and delivery. The frames show visuals; the transcript tells you everything spoken.`
+    : ''
+
   return `You are a brutally honest YouTube long-form content strategist and performance analyst.
 
 Brand: "${brand.brand_name}" | Niche: ${brand.niche} | Tone: ${brand.tone}
@@ -138,6 +148,7 @@ Platform: YouTube | Format: Long-form Video
 
 You are seeing ${frames} frames sampled across the full length of the video — covering the intro, early hook window, body sections, and outro. Use these to assess the full viewing experience and retention potential.
 ${inspirationNote ? `\n${inspirationNote}\n` : ''}
+${transcriptNote}
 ${benchmarkNote}
 
 Scoring rubric for long-form YouTube:
@@ -189,13 +200,14 @@ export async function analyzeMedia(
   brand: BrandContext,
   topPosts: TopPost[] = [],
   inspirationAccounts: string[] = [],
+  transcript: string | null = null,
 ): Promise<MediaAnalysis> {
   const client = getClient()
   const isLongForm = platform === 'youtube_long'
 
   const prompt = isLongForm
-    ? buildLongFormPrompt(frames.length, platform, brand, topPosts, inspirationAccounts)
-    : buildShortFormPrompt(frames.length, mediaType, platform, format, brand, topPosts, inspirationAccounts)
+    ? buildLongFormPrompt(frames.length, platform, brand, topPosts, inspirationAccounts, transcript)
+    : buildShortFormPrompt(frames.length, mediaType, platform, format, brand, topPosts, inspirationAccounts, transcript)
 
   const imageBlocks: Anthropic.ImageBlockParam[] = frames.map((data) => ({
     type: 'image',
