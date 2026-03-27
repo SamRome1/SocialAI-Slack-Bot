@@ -19,11 +19,12 @@ export interface ExtractResult {
 export async function extractFrames(
   buffer: Buffer,
   mimetype: string,
+  maxFrames = 6,
 ): Promise<ExtractResult> {
   if (mimetype.startsWith('image/')) {
     return extractImage(buffer)
   }
-  return extractVideoFrames(buffer)
+  return extractVideoFrames(buffer, maxFrames)
 }
 
 async function extractImage(buffer: Buffer): Promise<ExtractResult> {
@@ -34,7 +35,7 @@ async function extractImage(buffer: Buffer): Promise<ExtractResult> {
   return { frames: [resized.toString('base64')], mediaType: 'image' }
 }
 
-async function extractVideoFrames(buffer: Buffer): Promise<ExtractResult> {
+async function extractVideoFrames(buffer: Buffer, maxFrames: number): Promise<ExtractResult> {
   const tmpDir = path.join(os.tmpdir(), `socialai-${randomUUID()}`)
   await fs.mkdir(tmpDir)
   const inputPath = path.join(tmpDir, 'input.mp4')
@@ -43,11 +44,23 @@ async function extractVideoFrames(buffer: Buffer): Promise<ExtractResult> {
     await fs.writeFile(inputPath, buffer)
 
     const duration = await getVideoDuration(inputPath)
-    // 0.5s avoids black opening frames; 30% and 70% give middle/end coverage
-    const times = [0.5, duration * 0.3, duration * 0.7].filter((t) => t < duration)
+
+    // First frame: very early (avoids black frames), last frame: near end
+    // Middle frames distributed evenly so Claude sees the full arc of the video
+    const times: number[] = []
+    const startTime = Math.min(0.5, duration * 0.02)
+    times.push(startTime)
+
+    for (let i = 1; i < maxFrames - 1; i++) {
+      times.push(startTime + (duration * 0.95 - startTime) * (i / (maxFrames - 1)))
+    }
+
+    times.push(duration * 0.97)
+
+    const validTimes = times.filter((t) => t < duration)
 
     const frames: string[] = []
-    for (const time of times) {
+    for (const time of validTimes) {
       const frameBuffer = await extractFrameAtTime(inputPath, time)
       const resized = await sharp(frameBuffer)
         .resize({ width: 960, withoutEnlargement: true })

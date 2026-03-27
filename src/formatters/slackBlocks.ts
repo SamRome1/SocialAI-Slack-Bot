@@ -33,11 +33,12 @@ export function buildPlatformPickerBlocks(
     {
       type: 'actions',
       elements: [
-        { type: 'button', text: { type: 'plain_text', text: 'Instagram' }, action_id: 'platform_select:instagram', value: value('instagram') },
-        { type: 'button', text: { type: 'plain_text', text: 'TikTok' },    action_id: 'platform_select:tiktok',    value: value('tiktok') },
-        { type: 'button', text: { type: 'plain_text', text: 'LinkedIn' },  action_id: 'platform_select:linkedin',  value: value('linkedin') },
-        { type: 'button', text: { type: 'plain_text', text: 'YouTube' },   action_id: 'platform_select:youtube',   value: value('youtube') },
-        { type: 'button', text: { type: 'plain_text', text: 'Twitter/X' }, action_id: 'platform_select:twitter',   value: value('twitter') },
+        { type: 'button', text: { type: 'plain_text', text: 'Instagram' },      action_id: 'platform_select:instagram',    value: value('instagram') },
+        { type: 'button', text: { type: 'plain_text', text: 'TikTok' },         action_id: 'platform_select:tiktok',       value: value('tiktok') },
+        { type: 'button', text: { type: 'plain_text', text: 'LinkedIn' },        action_id: 'platform_select:linkedin',     value: value('linkedin') },
+        { type: 'button', text: { type: 'plain_text', text: 'YouTube Short' },   action_id: 'platform_select:youtube',      value: value('youtube') },
+        { type: 'button', text: { type: 'plain_text', text: 'YouTube Long' },    action_id: 'platform_select:youtube_long', value: value('youtube_long') },
+        { type: 'button', text: { type: 'plain_text', text: 'Twitter/X' },       action_id: 'platform_select:twitter',      value: value('twitter') },
       ],
     },
   ]
@@ -153,6 +154,16 @@ export function buildAnalysisBlocks(
         type: 'section',
         text: { type: 'mrkdwn', text: `\`Caption ${i + 1}\`\n${caption}` },
       })
+    })
+  }
+
+  // Inspiration alignment
+  if (analysis.inspiration_alignment && analysis.inspiration_alignment.length > 0) {
+    blocks.push({ type: 'divider' })
+    const lines = analysis.inspiration_alignment.map((s, i) => `${i + 1}. ${s}`).join('\n')
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*:star: Inspiration Alignment*\n${lines}` },
     })
   }
 

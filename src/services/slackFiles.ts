@@ -48,22 +48,22 @@ export async function getSlackFileInfo(
   return { url, mimetype, name, channelId, threadTs }
 }
 
-const MAX_FILE_SIZE_BYTES = 75 * 1024 * 1024 // 75 MB
+export async function downloadSlackFile(url: string, botToken: string, maxSizeMB = 75): Promise<Buffer> {
+  const maxBytes = maxSizeMB * 1024 * 1024
 
-export async function downloadSlackFile(url: string, botToken: string): Promise<Buffer> {
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${botToken}` },
   })
   if (!res.ok) throw new Error(`File download failed: ${res.status}`)
 
   const contentLength = res.headers.get('content-length')
-  if (contentLength && parseInt(contentLength, 10) > MAX_FILE_SIZE_BYTES) {
-    throw new Error('File too large. Maximum size is 75 MB for videos.')
+  if (contentLength && parseInt(contentLength, 10) > maxBytes) {
+    throw new Error(`File too large. Maximum size is ${maxSizeMB} MB for this format.`)
   }
 
   const arrayBuffer = await res.arrayBuffer()
-  if (arrayBuffer.byteLength > MAX_FILE_SIZE_BYTES) {
-    throw new Error('File too large. Maximum size is 75 MB for videos.')
+  if (arrayBuffer.byteLength > maxBytes) {
+    throw new Error(`File too large. Maximum size is ${maxSizeMB} MB for this format.`)
   }
 
   return Buffer.from(arrayBuffer)

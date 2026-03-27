@@ -12,6 +12,7 @@ export interface MediaAnalysis {
   improvements: { issue: string; fix: string }[]
   reframe_suggestions: string[]
   caption_suggestions: string[]
+  inspiration_alignment?: string[]
 }
 
 export interface BrandContext {
@@ -20,9 +21,9 @@ export interface BrandContext {
   tone: string
 }
 
-export type Platform = 'instagram' | 'tiktok' | 'twitter' | 'linkedin' | 'youtube' | 'facebook'
+export type Platform = 'instagram' | 'tiktok' | 'twitter' | 'linkedin' | 'youtube' | 'youtube_long' | 'facebook'
 
-export const PLATFORMS: Platform[] = ['instagram', 'tiktok', 'twitter', 'linkedin', 'youtube', 'facebook']
+export const PLATFORMS: Platform[] = ['instagram', 'tiktok', 'twitter', 'linkedin', 'youtube', 'youtube_long', 'facebook']
 
 export const PLATFORM_LABELS: Record<Platform, string> = {
   instagram: 'Instagram',
@@ -30,6 +31,7 @@ export const PLATFORM_LABELS: Record<Platform, string> = {
   twitter: 'Twitter/X',
   linkedin: 'LinkedIn',
   youtube: 'YouTube',
+  youtube_long: 'YouTube',
   facebook: 'Facebook',
 }
 
@@ -39,5 +41,6 @@ export const PLATFORM_DEFAULT_FORMAT: Record<Platform, string> = {
   twitter: 'Video',
   linkedin: 'Video',
   youtube: 'Short',
+  youtube_long: 'Long-form Video',
   facebook: 'Reel',
 }

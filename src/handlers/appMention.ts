@@ -19,6 +19,15 @@ interface SlackFile {
   url_private_download?: string
 }
 
+function getInspirationAccounts(platform: string): string[] {
+  // Normalize youtube_long → youtube for env var lookup
+  const key = platform === 'youtube_long' ? 'youtube' : platform
+  const raw = process.env[`INSPIRATION_ACCOUNTS_${key.toUpperCase()}`]
+    ?? process.env.INSPIRATION_ACCOUNTS
+    ?? ''
+  return raw.split(',').map((s) => s.trim()).filter(Boolean)
+}
+
 async function getBrandContext(platform: string): Promise<{ brand: BrandContext; topPosts: import('../services/socialManager').TopPost[] }> {
   const context = await getAnalysisContext(platform)
   if (context) return { brand: context.brand, topPosts: context.topPosts }
@@ -73,19 +82,22 @@ export function registerPlatformActionHandler(app: App) {
       const [fileId, channelId, threadTs, platformStr] = parts
       const platform = platformStr as Platform
       const format = PLATFORM_DEFAULT_FORMAT[platform] ?? 'Video'
+      const isLongForm = platform === 'youtube_long'
 
       const messageTs = body.message?.ts as string | undefined
       if (messageTs) {
         await client.chat.update({
           channel: channelId,
           ts: messageTs,
-          text: `Analyzing for ${platform} ${format}...`,
+          text: `Analyzing for ${format}...`,
           blocks: buildAnalyzingBlocks(platform, format),
         })
       }
 
+      // Longform YouTube gets a longer timeout (8 min vs 3 min)
+      const timeoutMs = isLongForm ? 8 * 60 * 1000 : 3 * 60 * 1000
       const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Analysis timed out. Try a shorter or smaller video.')), 3 * 60 * 1000),
+        setTimeout(() => reject(new Error('Analysis timed out. Try a shorter or smaller video.')), timeoutMs),
       )
       Promise.race([
         runAnalysis(client, fileId, channelId, threadTs, platform, format, logger),
@@ -113,6 +125,8 @@ async function runAnalysis(
   logger: any,
 ) {
   try {
+    const isLongForm = platform === 'youtube_long'
+
     // Get file info + download
     const infoRes = await fetch(`https://slack.com/api/files.info?file=${fileId}`, {
       headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
@@ -124,11 +138,17 @@ async function runAnalysis(
     const url: string = infoJson.file.url_private_download
     const mimetype: string = infoJson.file.mimetype ?? 'video/mp4'
 
-    const fileBuffer = await downloadSlackFile(url, process.env.SLACK_BOT_TOKEN!)
-    const { frames, mediaType } = await extractFrames(fileBuffer, mimetype)
+    // Longform YouTube: allow up to 500 MB; all others: 75 MB
+    const maxSizeMB = isLongForm ? 500 : 75
+    const fileBuffer = await downloadSlackFile(url, process.env.SLACK_BOT_TOKEN!, maxSizeMB)
+
+    // Longform: 10 frames; short-form: 6 frames
+    const maxFrames = isLongForm ? 10 : 6
+    const { frames, mediaType } = await extractFrames(fileBuffer, mimetype, maxFrames)
 
     const { brand, topPosts } = await getBrandContext(platform)
-    const analysis = await analyzeMedia(frames, mediaType, platform, format, brand, topPosts)
+    const inspirationAccounts = getInspirationAccounts(platform)
+    const analysis = await analyzeMedia(frames, mediaType, platform, format, brand, topPosts, inspirationAccounts)
 
     await client.chat.postMessage({
       channel: channelId,
