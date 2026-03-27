@@ -1,10 +1,13 @@
 import OpenAI from 'openai'
 import ffmpeg from 'fluent-ffmpeg'
 import { createReadStream } from 'fs'
-import { rm } from 'fs/promises'
+import { rm, stat } from 'fs/promises'
 import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
+
+// Whisper's hard file size limit
+const WHISPER_MAX_BYTES = 24 * 1024 * 1024 // 24MB (leaving 1MB headroom under the 25MB limit)
 
 function getClient(): OpenAI | null {
   const apiKey = process.env.OPENAI_API_KEY
@@ -12,14 +15,28 @@ function getClient(): OpenAI | null {
   return new OpenAI({ apiKey })
 }
 
+function getVideoDuration(videoPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(videoPath, (err, metadata) => {
+      if (err) return reject(err)
+      resolve(metadata.format.duration ?? 0)
+    })
+  })
+}
+
 /**
  * Extracts audio from a video file as a small mono mp3.
- * 32kbps mono is plenty for speech recognition and keeps even a 1-hour
- * video well under Whisper's 25MB file limit.
+ * Caps duration to stay under Whisper's 25MB limit:
+ * at 32kbps mono, 24MB ≈ 100 minutes — enough for any realistic video.
  */
-function extractAudio(videoPath: string, audioPath: string): Promise<void> {
+async function extractAudio(videoPath: string, audioPath: string): Promise<void> {
+  const duration = await getVideoDuration(videoPath)
+  // 32kbps = 4000 bytes/sec → max seconds before hitting 24MB
+  const maxSeconds = Math.floor(WHISPER_MAX_BYTES / 4000)
+  const capDuration = duration > maxSeconds ? maxSeconds : undefined
+
   return new Promise<void>((resolve, reject) => {
-    ffmpeg(videoPath)
+    const cmd = ffmpeg(videoPath)
       .noVideo()
       .audioChannels(1)
       .audioFrequency(16000)
@@ -27,7 +44,10 @@ function extractAudio(videoPath: string, audioPath: string): Promise<void> {
       .format('mp3')
       .on('error', (err) => reject(err))
       .on('end', () => resolve())
-      .save(audioPath)
+
+    if (capDuration) cmd.duration(capDuration)
+
+    cmd.save(audioPath)
   })
 }
 

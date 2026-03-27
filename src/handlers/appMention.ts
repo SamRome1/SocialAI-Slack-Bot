@@ -172,8 +172,7 @@ async function runAnalysis(
     })
   } catch (err) {
     logger.error('runAnalysis error:', err)
-    // Only surface user-friendly messages, not internal error details
-    const userMessage = err instanceof Error && err.message.startsWith('File')
+    const userMessage = err instanceof Error
       ? err.message
       : 'Analysis failed. Please try again with a supported video or image.'
     await client.chat.postMessage({
