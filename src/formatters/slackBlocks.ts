@@ -75,6 +75,15 @@ export function buildAnalysisBlocks(
     text: { type: 'plain_text', text: `Content Analysis — ${label} ${format}` },
   })
 
+  // Content type badge
+  if (analysis.content_type) {
+    const label_display = analysis.content_type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `Detected content type: *${label_display}*` }],
+    })
+  }
+
   // Scores row 1: Overall + Hook
   blocks.push({
     type: 'section',

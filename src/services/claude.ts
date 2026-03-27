@@ -10,6 +10,16 @@ function getClient(): Anthropic {
   return new Anthropic({ apiKey })
 }
 
+const CONTENT_TYPE_SCORING: Record<string, string> = {
+  humor: 'Weight comedy timing and punchline delivery (40%), relatability/shareability (35%), hook (25%). Do NOT penalize for lack of product context — humor earns shares and follows, not conversions. Judge whether the joke lands.',
+  educational: 'Weight information clarity and structure (35%), hook/curiosity gap (35%), visual quality (30%). Judge whether a viewer learns something actionable.',
+  product_demo: 'Weight hook (40%), product clarity and wow moment (35%), platform fit (25%). Judge whether the product value is communicated within the first 5 seconds.',
+  podcast_clip: 'Weight hook moment selection (40%), subtitle clarity (30%), visual energy and split-screen dynamics (30%). Judge whether this clip has a standalone insight or emotional peak that works out of context.',
+  behind_the_scenes: 'Weight authenticity (40%), narrative arc (35%), hook (25%). Judge whether it gives a feeling of exclusive access.',
+  thought_leadership: 'Weight hook/provocation (40%), credibility signals (30%), platform fit (30%). Judge whether the opening statement is bold enough to stop a scroll.',
+  announcement: 'Weight hook (40%), product/news clarity (35%), excitement/energy (25%). Judge whether the news is clear within 3 seconds.',
+}
+
 function buildShortFormPrompt(
   frames: number,
   mediaType: 'image' | 'video',
@@ -33,11 +43,13 @@ function buildShortFormPrompt(
 
   const inspirationField = inspirationAccounts.length > 0
     ? `  "inspiration_alignment": [
-    "<specific insight on how this content aligns with or diverges from what ${inspirationAccounts.join('/')} typically does>",
-    "<concrete element from those accounts' playbook to incorporate into this piece>",
-    "<specific style, format, or hook technique from those accounts that would elevate this content>"
+    "<specific insight on how this content aligns with or diverges from what ${inspirationAccounts.join('/')} typically does — match the content_type you identified>",
+    "<concrete element from those accounts' playbook to incorporate into this specific type of content>",
+    "<specific style, format, or technique from those accounts that would elevate this content>"
   ],`
     : ''
+
+  const contentTypeList = Object.keys(CONTENT_TYPE_SCORING).join(', ')
 
   return `You are a brutally honest social media content performance analyst for expert creators.
 
@@ -47,14 +59,22 @@ ${frameNote}
 ${inspirationNote ? `\n${inspirationNote}\n` : ''}
 ${benchmarkNote}
 
-Scoring rubric — be ruthless, a 70+ means genuinely strong content:
-- overall_score: Holistic performance prediction. Weight hook (40%), visual quality (30%), platform fit (30%).
-- hook_strength: First 1-3 seconds for video (opening frame energy, pattern interrupts, curiosity gaps). For images: thumb-stopping power, contrast, faces, motion implied.
-- visual_quality: Lighting, framing, composition, color grading, text overlays, production value, audio clarity implied by visual cues.
-- platform_fit: Algorithm alignment — aspect ratio, pacing cues, trending formats, native platform behaviors (e.g. Reels need vertical, TikTok rewards raw authenticity, LinkedIn prefers talking-head + subtitles).
+STEP 1 — Identify content type before scoring.
+Look at the frames and classify this as one of: ${contentTypeList}
+This is critical — your scoring criteria, improvements, and suggestions must be appropriate for the actual content type. Do not evaluate a humor video like a product demo. Do not evaluate a podcast clip like an announcement.
+
+STEP 2 — Score using criteria for that content type:
+${Object.entries(CONTENT_TYPE_SCORING).map(([type, rule]) => `- ${type}: ${rule}`).join('\n')}
+
+General scoring notes (apply across all types):
+- hook_strength: First 1-3 seconds. Does it stop a scroll? Does it establish the content type and promise immediately?
+- visual_quality: Lighting, framing, composition, color, text overlays, production value.
+- platform_fit: Aspect ratio, pacing, format conventions, algorithm signals for ${platform}.
+- Be ruthless — 70+ means genuinely strong content for its type.
 
 Analyze this content and return ONLY valid JSON:
 {
+  "content_type": "<one of: ${contentTypeList}>",
   "overall_score": <0-100>,
   "hook_strength": <0-100>,
   "visual_quality": <0-100>,
@@ -63,29 +83,29 @@ Analyze this content and return ONLY valid JSON:
   "predicted_views_high": <optimistic view estimate>,
   "predicted_engagement_low": <decimal % e.g. 3.2>,
   "predicted_engagement_high": <decimal % e.g. 6.8>,
-  "summary": "<2-3 sentences: what this content does well, what the single biggest weakness is, and the one change that would have the biggest impact on performance>",
+  "summary": "<2-3 sentences evaluated against the content_type you identified: what it does well, its single biggest weakness for that type, and the one change with biggest impact>",
   "strengths": [
-    "<specific, evidence-based strength with reference to what you see>",
+    "<specific, evidence-based strength appropriate to the content_type — reference what you see>",
     "<specific strength>",
     "<specific strength>"
   ],
   "improvements": [
-    { "issue": "<specific, named problem>", "fix": "<concrete, step-by-step actionable solution — not vague>"},
-    { "issue": "<specific problem>", "fix": "<concrete solution>" },
-    { "issue": "<specific problem>", "fix": "<concrete solution>" }
+    { "issue": "<specific problem relevant to the content_type — not generic>", "fix": "<concrete, actionable fix — not vague>" },
+    { "issue": "<specific problem>", "fix": "<concrete fix>" },
+    { "issue": "<specific problem>", "fix": "<concrete fix>" }
   ],
   "reframe_suggestions": [
-    "<alternative hook or angle — write the actual opening line/visual concept>",
-    "<alternative hook — different emotional trigger or format>",
+    "<alternative hook or angle appropriate to the content_type — write the actual opening line or visual concept>",
+    "<alternative hook — different emotional trigger or format, still matching content_type>",
     "<alternative angle — different narrative structure>"
   ],
   "caption_suggestions": [
-    "<ready-to-use caption: punchy hook line + 2-3 body sentences + CTA + 5-8 relevant hashtags>",
-    "<ready-to-use caption: different style/emotional angle + CTA + 5-8 relevant hashtags>"
+    "<ready-to-use caption matching the content_type tone: punchy hook + body + CTA + 5-8 relevant hashtags>",
+    "<ready-to-use caption: different style/angle + CTA + 5-8 relevant hashtags>"
   ]${inspirationField ? `,\n  ${inspirationField}` : ''}
 }
 
-Reference the actual visual content you see. Be specific, not generic.`
+Reference the actual frames you see. Be specific, not generic. Your improvements and reframe suggestions must match the content_type — do not suggest adding product demos to a humor video.`
 }
 
 function buildLongFormPrompt(

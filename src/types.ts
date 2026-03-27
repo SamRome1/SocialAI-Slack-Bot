@@ -1,4 +1,5 @@
 export interface MediaAnalysis {
+  content_type: string
   overall_score: number
   hook_strength: number
   visual_quality: number
