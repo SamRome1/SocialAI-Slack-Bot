@@ -107,7 +107,7 @@ export function buildAnalysisBlocks(
     type: 'section',
     fields: [
       { type: 'mrkdwn', text: `*Predicted Views*\n${fmt(analysis.predicted_views_low)} – ${fmt(analysis.predicted_views_high)}` },
-      { type: 'mrkdwn', text: `*Predicted Engagement*\n${analysis.predicted_engagement_low.toFixed(1)}% – ${analysis.predicted_engagement_high.toFixed(1)}%` },
+      { type: 'mrkdwn', text: `*Predicted Engagement*\n${Number(analysis.predicted_engagement_low ?? 0).toFixed(1)}% – ${Number(analysis.predicted_engagement_high ?? 0).toFixed(1)}%` },
     ],
   })
 
