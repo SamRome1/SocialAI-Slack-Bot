@@ -2,6 +2,19 @@ import 'dotenv/config'
 import http from 'http'
 import { createApp } from './bot'
 
+// @slack/socket-mode's finity state machine throws when Slack sends
+// "server explicit disconnect" while still in the "connecting" state.
+// Catch it here so the built-in reconnect loop can recover without
+// crashing the process.
+process.on('uncaughtException', (err: Error) => {
+  if (err.message?.includes('server explicit disconnect')) {
+    console.warn('[socket-mode] caught finity disconnect race — waiting for reconnect:', err.message)
+    return
+  }
+  console.error('Uncaught exception:', err)
+  process.exit(1)
+})
+
 async function main() {
   const app = createApp()
   const port = parseInt(process.env.PORT ?? '3000', 10)
