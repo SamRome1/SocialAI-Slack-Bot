@@ -299,8 +299,6 @@ export async function getEditInstructions(
     .map((b) => `Block ${b.index} [${b.start.toFixed(1)}s–${b.end.toFixed(1)}s]: "${b.summary}"\n  Text: "${b.text}"`)
     .join('\n\n')
 
-  const targetB = Math.round(videoDuration)
-  const targetC = Math.round(videoDuration * 0.75)
   const targetD = Math.round(videoDuration * 0.5)
 
   const prompt = `You are a professional video editor creating 3 versions of a short-form video for ${platform}.
@@ -313,19 +311,20 @@ Total duration: ${videoDuration.toFixed(1)}s
 
 Create 3 versions by selecting and reordering complete blocks:
 
-VERSION B — "Hook B" (target ~${targetB}s)
-Start with the single most scroll-stopping block. Keep most blocks. Rearrange so the strongest hook opens the video. The sequence must still tell a coherent story — no block should reference something the viewer hasn't seen yet.
+VERSION B — "Hook B"
+Pick the single most scroll-stopping block as the opener. Then include ONLY the blocks that are genuinely necessary for the story to make sense from that point — drop any setup or context blocks that the viewer no longer needs because the hook already established the premise. The result can be shorter than the original if the skipped blocks were just setup.
 
-VERSION C — "Hook C" (target ~${targetC}s)
-Start with a DIFFERENT strong hook block (not the same as Version B). Drop 1–2 of the weakest/slowest blocks to hit the shorter target. Again, the sequence must be narratively coherent.
+VERSION C — "Hook C"
+Pick a DIFFERENT strong hook block (not the same as Version B). Apply the same logic — only include blocks needed for the story to hold after that hook. This version should aim to be noticeably shorter than Version B by being more selective about which context blocks to keep.
 
 VERSION D — "Tight Cut" (target ~${targetD}s)
-Keep the original block order but drop the weakest blocks to hit the target length. Do not reorder.
+Keep the original block order. Drop the weakest/slowest blocks to roughly halve the length. Do not reorder.
 
 Rules:
 - Use only complete blocks — no partial blocks, no timestamp splicing
 - Each block can appear at most once per version
-- Every version must make narrative sense on its own — no forward references, no dangling setups
+- Every version must make narrative sense as a standalone video
+- A viewer who starts at the hook block should be able to follow along without missing context — if a skipped block is truly needed, keep it; if it was just intro setup that the hook made redundant, drop it
 - block_sequence contains block index numbers in playback order
 
 Return ONLY valid JSON:

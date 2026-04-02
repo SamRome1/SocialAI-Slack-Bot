@@ -3,7 +3,7 @@ import fs from 'fs/promises'
 import { downloadSlackFile } from '../services/slackFiles'
 import { extractFrames } from '../services/frameExtractor'
 import { transcribeVideo, type TranscriptResult } from '../services/transcriber'
-import { analyzeMedia, getThoughtBlocks, getEditInstructions, validateEditInstructions } from '../services/claude'
+import { analyzeMedia, getThoughtBlocks, getEditInstructions } from '../services/claude'
 import { createVariant } from '../services/videoEditor'
 import { getAnalysisContext } from '../services/socialManager'
 import { buildPlatformPickerBlocks, buildAnalyzingBlocks, buildAnalysisBlocks } from '../formatters/slackBlocks'
@@ -180,11 +180,10 @@ async function runAnalysis(
           : Promise.resolve(null),
       ])
 
-      // Edit instructions need thought blocks first, then validation
+      // Edit instructions need thought blocks first
       let editInstructions = null
       if (isVideo && thoughtBlocks && thoughtBlocks.length > 0) {
-        const rawInstructions = await getEditInstructions(thoughtBlocks, duration, platform)
-        editInstructions = await validateEditInstructions(thoughtBlocks, rawInstructions)
+        editInstructions = await getEditInstructions(thoughtBlocks, duration, platform)
       }
 
       // Post condensed analysis
