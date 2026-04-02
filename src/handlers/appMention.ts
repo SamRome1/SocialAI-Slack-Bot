@@ -1,8 +1,10 @@
 import type { App } from '@slack/bolt'
+import fs from 'fs/promises'
 import { downloadSlackFile } from '../services/slackFiles'
 import { extractFrames } from '../services/frameExtractor'
 import { transcribeVideo } from '../services/transcriber'
-import { analyzeMedia } from '../services/claude'
+import { analyzeMedia, getEditInstructions } from '../services/claude'
+import { createVariant } from '../services/videoEditor'
 import { getAnalysisContext } from '../services/socialManager'
 import { buildPlatformPickerBlocks, buildAnalyzingBlocks, buildAnalysisBlocks } from '../formatters/slackBlocks'
 import type { BrandContext, Platform } from '../types'
@@ -95,8 +97,8 @@ export function registerPlatformActionHandler(app: App) {
         })
       }
 
-      // Longform YouTube gets a longer timeout (8 min vs 3 min)
-      const timeoutMs = isLongForm ? 8 * 60 * 1000 : 3 * 60 * 1000
+      // Longform YouTube: 8 min; short-form: 6 min (extra time for 3x FFmpeg edit passes)
+      const timeoutMs = isLongForm ? 8 * 60 * 1000 : 6 * 60 * 1000
       const timeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Analysis timed out. Try a shorter or smaller video.')), timeoutMs),
       )
@@ -125,6 +127,8 @@ async function runAnalysis(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   logger: any,
 ) {
+  const editedPaths: string[] = []
+
   try {
     const isLongForm = platform === 'youtube_long'
 
@@ -138,6 +142,7 @@ async function runAnalysis(
 
     const url: string = infoJson.file.url_private_download
     const mimetype: string = infoJson.file.mimetype ?? 'video/mp4'
+    const isVideo = mimetype.startsWith('video/')
 
     // Longform YouTube: allow up to 500 MB; all others: 75 MB
     const maxSizeMB = isLongForm ? 500 : 75
@@ -146,30 +151,67 @@ async function runAnalysis(
     // Longform: 10 frames; short-form: 6 frames
     const maxFrames = isLongForm ? 10 : 6
     let frames: string[]
+    let timestamps: number[]
+    let duration: number
     let mediaType: 'image' | 'video'
     let transcript: string | null = null
+
     try {
       const [extractResult, transcriptResult] = await Promise.all([
         extractFrames(filePath, mimetype, maxFrames),
-        mimetype.startsWith('video/') ? transcribeVideo(filePath) : Promise.resolve(null),
+        isVideo ? transcribeVideo(filePath) : Promise.resolve(null),
       ])
       frames = extractResult.frames
+      timestamps = extractResult.timestamps
+      duration = extractResult.duration
       mediaType = extractResult.mediaType
       transcript = transcriptResult
+
+      const { brand, topPosts } = await getBrandContext(platform)
+      const inspirationAccounts = getInspirationAccounts(platform)
+
+      // Run analysis + edit instructions in parallel (both need frames)
+      const [analysis, editInstructions] = await Promise.all([
+        analyzeMedia(frames, mediaType, platform, format, brand, topPosts, inspirationAccounts, transcript),
+        isVideo
+          ? getEditInstructions(frames, timestamps, duration, platform, transcript)
+          : Promise.resolve(null),
+      ])
+
+      // Post condensed analysis
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text: `Analysis complete — Overall score: ${analysis.overall_score}/100`,
+        blocks: buildAnalysisBlocks(analysis, platform, format),
+      })
+
+      // If it's a video with edit instructions, produce and upload the 3 variants
+      if (isVideo && editInstructions) {
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          text: 'Generating 3 edited versions...',
+        })
+
+        const [hookBPath, hookCPath, tightCutPath] = await Promise.all([
+          createVariant(filePath, editInstructions.hook_b.segments, 'hook-b'),
+          createVariant(filePath, editInstructions.hook_c.segments, 'hook-c'),
+          createVariant(filePath, editInstructions.tight_cut.segments, 'tight-cut'),
+        ])
+        editedPaths.push(hookBPath, hookCPath, tightCutPath)
+
+        // Upload all 3 files to the thread
+        const token = process.env.SLACK_BOT_TOKEN!
+        await Promise.all([
+          uploadVideoToSlack(token, hookBPath, `hook-b.mp4`, `*Hook B* — ${editInstructions.hook_b.reason}`, channelId, threadTs),
+          uploadVideoToSlack(token, hookCPath, `hook-c.mp4`, `*Hook C* — ${editInstructions.hook_c.reason}`, channelId, threadTs),
+          uploadVideoToSlack(token, tightCutPath, `tight-cut.mp4`, `*Tight Cut* — Original order, slow parts removed`, channelId, threadTs),
+        ])
+      }
     } finally {
       await cleanup()
     }
-
-    const { brand, topPosts } = await getBrandContext(platform)
-    const inspirationAccounts = getInspirationAccounts(platform)
-    const analysis = await analyzeMedia(frames, mediaType, platform, format, brand, topPosts, inspirationAccounts, transcript)
-
-    await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: threadTs,
-      text: `Analysis complete — Overall score: ${analysis.overall_score}/100`,
-      blocks: buildAnalysisBlocks(analysis, platform, format),
-    })
   } catch (err) {
     logger.error('runAnalysis error:', err)
     const userMessage = err instanceof Error
@@ -180,5 +222,35 @@ async function runAnalysis(
       thread_ts: threadTs,
       text: `:x: ${userMessage}`,
     })
+  } finally {
+    // Clean up edited output files
+    await Promise.allSettled(editedPaths.map((p) => fs.unlink(p)))
   }
+}
+
+async function uploadVideoToSlack(
+  token: string,
+  filePath: string,
+  filename: string,
+  initialComment: string,
+  channelId: string,
+  threadTs: string,
+): Promise<void> {
+  const fileBuffer = await fs.readFile(filePath)
+
+  const formData = new FormData()
+  formData.append('token', token)
+  formData.append('channels', channelId)
+  formData.append('thread_ts', threadTs)
+  formData.append('filename', filename)
+  formData.append('initial_comment', initialComment)
+  formData.append('file', new Blob([fileBuffer], { type: 'video/mp4' }), filename)
+
+  const res = await fetch('https://slack.com/api/files.upload', {
+    method: 'POST',
+    body: formData,
+  })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const json = await res.json() as any
+  if (!json.ok) throw new Error(`files.upload failed for ${filename}: ${json.error}`)
 }

@@ -13,6 +13,8 @@ ffmpeg.setFfprobePath(ffprobePath.path)
 
 export interface ExtractResult {
   frames: string[]       // base64 JPEG strings
+  timestamps: number[]   // seconds into the video each frame was taken from
+  duration: number       // total video duration in seconds (0 for images)
   mediaType: 'image' | 'video'
 }
 
@@ -37,7 +39,7 @@ async function extractImage(filePath: string): Promise<ExtractResult> {
     .resize({ width: 1280, withoutEnlargement: true })
     .jpeg({ quality: 85 })
     .toBuffer()
-  return { frames: [resized.toString('base64')], mediaType: 'image' }
+  return { frames: [resized.toString('base64')], timestamps: [0], duration: 0, mediaType: 'image' }
 }
 
 async function extractVideoFrames(inputPath: string, maxFrames: number): Promise<ExtractResult> {
@@ -71,7 +73,7 @@ async function extractVideoFrames(inputPath: string, maxFrames: number): Promise
       frames.push(resized.toString('base64'))
     }
 
-    return { frames, mediaType: 'video' }
+    return { frames, timestamps: validTimes, duration, mediaType: 'video' }
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true })
   }

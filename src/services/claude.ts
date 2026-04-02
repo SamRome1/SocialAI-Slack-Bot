@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { MediaAnalysis, BrandContext } from '../types'
+import type { MediaAnalysis, BrandContext, EditInstructions } from '../types'
 import type { TopPost } from './socialManager'
 
 const MODEL = 'claude-sonnet-4-6'
@@ -230,4 +230,90 @@ export async function analyzeMedia(
   const jsonMatch = text.match(/\{[\s\S]*\}/)
   if (!jsonMatch) throw new Error('Claude did not return valid JSON')
   return JSON.parse(jsonMatch[0]) as MediaAnalysis
+}
+
+export async function getEditInstructions(
+  frames: string[],
+  timestamps: number[],
+  videoDuration: number,
+  platform: string,
+  transcript: string | null,
+): Promise<EditInstructions> {
+  const client = getClient()
+
+  const frameDescriptions = frames.map((_, i) => `Frame ${i + 1} [t=${timestamps[i].toFixed(1)}s]`).join(', ')
+
+  const transcriptNote = transcript
+    ? `\nFull audio transcript:\n"""\n${transcript}\n"""\nUse this to understand the spoken narrative, punchlines, key moments, and where energy drops.`
+    : ''
+
+  const prompt = `You are a professional video editor optimizing a short-form video for ${platform}.
+
+Video duration: ${videoDuration.toFixed(1)}s
+Frames provided: ${frameDescriptions}
+${transcriptNote}
+
+You are seeing ${frames.length} frames sampled at the timestamps listed above. Use them to understand the visual arc and energy of the video.
+
+Your job is to produce edit instructions for 3 versions of this video:
+
+VERSION B — "Hook B" (~${Math.round(videoDuration)}s, same total length)
+Find the single strongest hook moment in the video (a moment that would stop a scroll if the video started there). Rearrange segments so the video opens at that moment. You may append the pre-hook material after, or drop it if it adds no value. Total duration should stay close to ${Math.round(videoDuration)}s.
+
+VERSION C — "Hook C" (~${Math.round(videoDuration * 0.75)}s, different hook + tighter)
+Find a second strong hook moment (different from Version B). Rearrange to start there AND cut any slow/low-value segments throughout. Target: ~${Math.round(videoDuration * 0.75)}s total.
+
+VERSION D — "Tight Cut" (~${Math.round(videoDuration * 0.5)}s, original order)
+Keep the original segment order but aggressively remove all slow, repetitive, or low-energy sections. Target: ~${Math.round(videoDuration * 0.5)}s total.
+
+IMPORTANT RULES:
+- All timestamps must be between 0 and ${videoDuration.toFixed(1)}
+- Segments within each version must not overlap
+- Each segment needs a minimum duration of 1.0s
+- The segments array defines what gets concatenated in order — first segment plays first
+- For hook variants, the pre-hook material (everything before the hook start) can either be appended at the end or dropped — choose based on whether it adds context or is just filler
+
+Return ONLY valid JSON:
+{
+  "video_duration": ${videoDuration.toFixed(1)},
+  "hook_b": {
+    "reason": "<one sentence: why this moment is the strongest hook and what timestamp it starts at>",
+    "segments": [
+      { "start": <number>, "end": <number> }
+    ]
+  },
+  "hook_c": {
+    "reason": "<one sentence: why this is a strong alternative hook and what timestamp it starts at>",
+    "segments": [
+      { "start": <number>, "end": <number> }
+    ]
+  },
+  "tight_cut": {
+    "segments": [
+      { "start": <number>, "end": <number> }
+    ]
+  }
+}`
+
+  const imageBlocks: Anthropic.ImageBlockParam[] = frames.map((data) => ({
+    type: 'image',
+    source: { type: 'base64', media_type: 'image/jpeg', data },
+  }))
+
+  const message = await client.messages.create({
+    model: MODEL,
+    max_tokens: 1024,
+    messages: [{
+      role: 'user',
+      content: [
+        ...imageBlocks,
+        { type: 'text', text: prompt },
+      ],
+    }],
+  })
+
+  const text = message.content[0].type === 'text' ? message.content[0].text : ''
+  const jsonMatch = text.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error('Claude did not return edit instructions JSON')
+  return JSON.parse(jsonMatch[0]) as EditInstructions
 }

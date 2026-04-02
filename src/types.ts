@@ -16,6 +16,26 @@ export interface MediaAnalysis {
   inspiration_alignment?: string[]
 }
 
+export interface VideoSegment {
+  start: number
+  end: number
+}
+
+export interface EditInstructions {
+  video_duration: number
+  hook_b: {
+    reason: string
+    segments: VideoSegment[]
+  }
+  hook_c: {
+    reason: string
+    segments: VideoSegment[]
+  }
+  tight_cut: {
+    segments: VideoSegment[]
+  }
+}
+
 export interface BrandContext {
   brand_name: string
   niche: string
