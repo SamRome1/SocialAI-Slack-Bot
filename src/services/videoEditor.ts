@@ -44,14 +44,20 @@ export async function createVariant(
     }
 
     // Multiple segments — build filter_complex with trim + concat
+    // Short audio fades at each boundary soften any remaining cut harshness
+    const FADE_DURATION = 0.08
     const videoFilters: string[] = []
     const audioFilters: string[] = []
     const concatInputs: string[] = []
 
     segments.forEach((seg, i) => {
       const duration = seg.end - seg.start
+      const fadeOutStart = Math.max(0, duration - FADE_DURATION)
       videoFilters.push(`[0:v]trim=start=${seg.start}:duration=${duration},setpts=PTS-STARTPTS[v${i}]`)
-      audioFilters.push(`[0:a]atrim=start=${seg.start}:duration=${duration},asetpts=PTS-STARTPTS[a${i}]`)
+      audioFilters.push(
+        `[0:a]atrim=start=${seg.start}:duration=${duration},asetpts=PTS-STARTPTS,` +
+        `afade=t=in:st=0:d=${FADE_DURATION},afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${FADE_DURATION}[a${i}]`,
+      )
       concatInputs.push(`[v${i}][a${i}]`)
     })
 

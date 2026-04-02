@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { MediaAnalysis, BrandContext, EditInstructions } from '../types'
+import type { MediaAnalysis, BrandContext, EditInstructions, ThoughtBlock } from '../types'
 import type { TopPost } from './socialManager'
+import type { TranscriptResult } from './transcriber'
 
 const MODEL = 'claude-sonnet-4-6'
 
@@ -232,88 +233,197 @@ export async function analyzeMedia(
   return JSON.parse(jsonMatch[0]) as MediaAnalysis
 }
 
+// ── Step 1: Break transcript into semantic thought blocks ─────────────────────
+
+export async function getThoughtBlocks(
+  transcript: TranscriptResult,
+  videoDuration: number,
+): Promise<ThoughtBlock[]> {
+  const client = getClient()
+
+  const segmentList = transcript.segments
+    .map((s) => `[${s.start.toFixed(2)}s → ${s.end.toFixed(2)}s] "${s.text}"`)
+    .join('\n')
+
+  const prompt = `You are analyzing a video transcript to identify natural story blocks.
+
+Video duration: ${videoDuration.toFixed(1)}s
+
+Timestamped transcript:
+${segmentList}
+
+Group this transcript into 4–8 semantic blocks — each block is one complete, self-contained idea or story beat. A viewer who watched only that block should understand what point is being made.
+
+Rules:
+- Block boundaries MUST land exactly on a segment boundary (use the → timestamps as your only valid split points)
+- Blocks must cover the entire video with no gaps and no overlaps — first block starts at ${transcript.segments[0].start.toFixed(2)}, last block ends at ${transcript.segments[transcript.segments.length - 1].end.toFixed(2)}
+- Minimum block duration: 3 seconds
+- Index blocks starting from 0
+
+Return ONLY valid JSON:
+{
+  "blocks": [
+    {
+      "index": 0,
+      "start": <number>,
+      "end": <number>,
+      "summary": "<one sentence: what this block covers — e.g. 'Introduces the problem: OFFSET pagination slowing at scale'>",
+      "text": "<full transcript text for this block, concatenated>"
+    }
+  ]
+}`
+
+  const message = await client.messages.create({
+    model: MODEL,
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: prompt }],
+  })
+
+  const raw = message.content[0].type === 'text' ? message.content[0].text : ''
+  const jsonMatch = raw.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error('Claude did not return thought blocks JSON')
+  const parsed = JSON.parse(jsonMatch[0]) as { blocks: ThoughtBlock[] }
+  return parsed.blocks
+}
+
+// ── Step 2: Choose which blocks go in each version ────────────────────────────
+
 export async function getEditInstructions(
-  frames: string[],
-  timestamps: number[],
+  blocks: ThoughtBlock[],
   videoDuration: number,
   platform: string,
-  transcript: string | null,
 ): Promise<EditInstructions> {
   const client = getClient()
 
-  const frameDescriptions = frames.map((_, i) => `Frame ${i + 1} [t=${timestamps[i].toFixed(1)}s]`).join(', ')
+  const blockList = blocks
+    .map((b) => `Block ${b.index} [${b.start.toFixed(1)}s–${b.end.toFixed(1)}s]: "${b.summary}"\n  Text: "${b.text}"`)
+    .join('\n\n')
 
-  const transcriptNote = transcript
-    ? `\nFull audio transcript:\n"""\n${transcript}\n"""\nUse this to understand the spoken narrative, punchlines, key moments, and where energy drops.`
-    : ''
+  const targetB = Math.round(videoDuration)
+  const targetC = Math.round(videoDuration * 0.75)
+  const targetD = Math.round(videoDuration * 0.5)
 
-  const prompt = `You are a professional video editor optimizing a short-form video for ${platform}.
+  const prompt = `You are a professional video editor creating 3 versions of a short-form video for ${platform}.
 
-Video duration: ${videoDuration.toFixed(1)}s
-Frames provided: ${frameDescriptions}
-${transcriptNote}
+The video has been broken into the following semantic blocks:
 
-You are seeing ${frames.length} frames sampled at the timestamps listed above. Use them to understand the visual arc and energy of the video.
+${blockList}
 
-Your job is to produce edit instructions for 3 versions of this video:
+Total duration: ${videoDuration.toFixed(1)}s
 
-VERSION B — "Hook B" (~${Math.round(videoDuration)}s, same total length)
-Find the single strongest hook moment in the video (a moment that would stop a scroll if the video started there). Rearrange segments so the video opens at that moment. You may append the pre-hook material after, or drop it if it adds no value. Total duration should stay close to ${Math.round(videoDuration)}s.
+Create 3 versions by selecting and reordering complete blocks:
 
-VERSION C — "Hook C" (~${Math.round(videoDuration * 0.75)}s, different hook + tighter)
-Find a second strong hook moment (different from Version B). Rearrange to start there AND cut any slow/low-value segments throughout. Target: ~${Math.round(videoDuration * 0.75)}s total.
+VERSION B — "Hook B" (target ~${targetB}s)
+Start with the single most scroll-stopping block. Keep most blocks. Rearrange so the strongest hook opens the video. The sequence must still tell a coherent story — no block should reference something the viewer hasn't seen yet.
 
-VERSION D — "Tight Cut" (~${Math.round(videoDuration * 0.5)}s, original order)
-Keep the original segment order but aggressively remove all slow, repetitive, or low-energy sections. Target: ~${Math.round(videoDuration * 0.5)}s total.
+VERSION C — "Hook C" (target ~${targetC}s)
+Start with a DIFFERENT strong hook block (not the same as Version B). Drop 1–2 of the weakest/slowest blocks to hit the shorter target. Again, the sequence must be narratively coherent.
 
-IMPORTANT RULES:
-- All timestamps must be between 0 and ${videoDuration.toFixed(1)}
-- Segments within each version must not overlap
-- Each segment needs a minimum duration of 1.0s
-- The segments array defines what gets concatenated in order — first segment plays first
-- For hook variants, the pre-hook material (everything before the hook start) can either be appended at the end or dropped — choose based on whether it adds context or is just filler
+VERSION D — "Tight Cut" (target ~${targetD}s)
+Keep the original block order but drop the weakest blocks to hit the target length. Do not reorder.
+
+Rules:
+- Use only complete blocks — no partial blocks, no timestamp splicing
+- Each block can appear at most once per version
+- Every version must make narrative sense on its own — no forward references, no dangling setups
+- block_sequence contains block index numbers in playback order
 
 Return ONLY valid JSON:
 {
   "video_duration": ${videoDuration.toFixed(1)},
   "hook_b": {
-    "reason": "<one sentence: why this moment is the strongest hook and what timestamp it starts at>",
-    "segments": [
-      { "start": <number>, "end": <number> }
-    ]
+    "reason": "<one sentence: which block opens it and why it's the strongest hook>",
+    "block_sequence": [<block indices in order>]
   },
   "hook_c": {
-    "reason": "<one sentence: why this is a strong alternative hook and what timestamp it starts at>",
-    "segments": [
-      { "start": <number>, "end": <number> }
-    ]
+    "reason": "<one sentence: which block opens it and why it's a strong alternative hook>",
+    "block_sequence": [<block indices in order>]
   },
   "tight_cut": {
-    "segments": [
-      { "start": <number>, "end": <number> }
-    ]
+    "block_sequence": [<block indices in order, original ordering preserved>]
   }
 }`
 
-  const imageBlocks: Anthropic.ImageBlockParam[] = frames.map((data) => ({
-    type: 'image',
-    source: { type: 'base64', media_type: 'image/jpeg', data },
-  }))
+  const message = await client.messages.create({
+    model: MODEL,
+    max_tokens: 512,
+    messages: [{ role: 'user', content: prompt }],
+  })
+
+  const raw = message.content[0].type === 'text' ? message.content[0].text : ''
+  const jsonMatch = raw.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error('Claude did not return edit instructions JSON')
+  return JSON.parse(jsonMatch[0]) as EditInstructions
+}
+
+// ── Step 3: Validate narrative coherence of each version ──────────────────────
+
+export async function validateEditInstructions(
+  blocks: ThoughtBlock[],
+  instructions: EditInstructions,
+): Promise<EditInstructions> {
+  const client = getClient()
+
+  const blockMap = new Map(blocks.map((b) => [b.index, b]))
+
+  function assembleText(sequence: number[]): string {
+    return sequence.map((i) => blockMap.get(i)?.text ?? '').join(' ')
+  }
+
+  const versions = [
+    { name: 'hook_b', reason: instructions.hook_b.reason, sequence: instructions.hook_b.block_sequence },
+    { name: 'hook_c', reason: instructions.hook_c.reason, sequence: instructions.hook_c.block_sequence },
+    { name: 'tight_cut', reason: 'Tight cut', sequence: instructions.tight_cut.block_sequence },
+  ]
+
+  const blockSummaries = blocks.map((b) => `Block ${b.index}: "${b.summary}"`).join('\n')
+
+  const versionDescriptions = versions.map((v) => `
+${v.name} — sequence: [${v.sequence.join(', ')}]
+Assembled text: "${assembleText(v.sequence)}"`).join('\n')
+
+  const prompt = `You are reviewing 3 edited versions of a video for narrative coherence.
+
+Available blocks:
+${blockSummaries}
+
+${versionDescriptions}
+
+For each version, check:
+1. Does it make sense without prior context? A new viewer should follow the story.
+2. Does any sentence reference something not yet shown? (e.g. "as I mentioned", "compare this to", "unlike before")
+3. Is there a clear arc — does it build to something or resolve a question?
+
+If a version has a coherence problem, return a corrected block_sequence using only the blocks already in that version (you may reorder or drop one, but do not add new blocks).
+If a version is fine, return the same sequence unchanged.
+
+Return ONLY valid JSON:
+{
+  "hook_b": { "ok": <true/false>, "issue": "<what's wrong or 'none'>", "block_sequence": [<corrected or same>] },
+  "hook_c": { "ok": <true/false>, "issue": "<what's wrong or 'none'>", "block_sequence": [<corrected or same>] },
+  "tight_cut": { "ok": <true/false>, "issue": "<what's wrong or 'none'>", "block_sequence": [<corrected or same>] }
+}`
 
   const message = await client.messages.create({
     model: MODEL,
-    max_tokens: 1024,
-    messages: [{
-      role: 'user',
-      content: [
-        ...imageBlocks,
-        { type: 'text', text: prompt },
-      ],
-    }],
+    max_tokens: 512,
+    messages: [{ role: 'user', content: prompt }],
   })
 
-  const text = message.content[0].type === 'text' ? message.content[0].text : ''
-  const jsonMatch = text.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) throw new Error('Claude did not return edit instructions JSON')
-  return JSON.parse(jsonMatch[0]) as EditInstructions
+  const raw = message.content[0].type === 'text' ? message.content[0].text : ''
+  const jsonMatch = raw.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) return instructions // fall back to original if validation fails
+
+  const validated = JSON.parse(jsonMatch[0]) as {
+    hook_b: { ok: boolean; block_sequence: number[] }
+    hook_c: { ok: boolean; block_sequence: number[] }
+    tight_cut: { ok: boolean; block_sequence: number[] }
+  }
+
+  return {
+    video_duration: instructions.video_duration,
+    hook_b: { reason: instructions.hook_b.reason, block_sequence: validated.hook_b.block_sequence },
+    hook_c: { reason: instructions.hook_c.reason, block_sequence: validated.hook_c.block_sequence },
+    tight_cut: { block_sequence: validated.tight_cut.block_sequence },
+  }
 }

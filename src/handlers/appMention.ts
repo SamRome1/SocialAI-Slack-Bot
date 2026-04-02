@@ -2,12 +2,12 @@ import type { App } from '@slack/bolt'
 import fs from 'fs/promises'
 import { downloadSlackFile } from '../services/slackFiles'
 import { extractFrames } from '../services/frameExtractor'
-import { transcribeVideo } from '../services/transcriber'
-import { analyzeMedia, getEditInstructions } from '../services/claude'
+import { transcribeVideo, type TranscriptResult } from '../services/transcriber'
+import { analyzeMedia, getThoughtBlocks, getEditInstructions, validateEditInstructions } from '../services/claude'
 import { createVariant } from '../services/videoEditor'
 import { getAnalysisContext } from '../services/socialManager'
 import { buildPlatformPickerBlocks, buildAnalyzingBlocks, buildAnalysisBlocks } from '../formatters/slackBlocks'
-import type { BrandContext, Platform } from '../types'
+import type { BrandContext, Platform, ThoughtBlock, VideoSegment } from '../types'
 import { PLATFORM_DEFAULT_FORMAT } from '../types'
 
 const SUPPORTED_TYPES = new Set([
@@ -154,10 +154,10 @@ async function runAnalysis(
     let timestamps: number[]
     let duration: number
     let mediaType: 'image' | 'video'
-    let transcript: string | null = null
+    let transcriptResult: TranscriptResult | null = null
 
     try {
-      const [extractResult, transcriptResult] = await Promise.all([
+      const [extractResult, transcriptRaw] = await Promise.all([
         extractFrames(filePath, mimetype, maxFrames),
         isVideo ? transcribeVideo(filePath) : Promise.resolve(null),
       ])
@@ -165,18 +165,27 @@ async function runAnalysis(
       timestamps = extractResult.timestamps
       duration = extractResult.duration
       mediaType = extractResult.mediaType
-      transcript = transcriptResult
+      transcriptResult = transcriptRaw
 
       const { brand, topPosts } = await getBrandContext(platform)
       const inspirationAccounts = getInspirationAccounts(platform)
 
-      // Run analysis + edit instructions in parallel (both need frames)
-      const [analysis, editInstructions] = await Promise.all([
-        analyzeMedia(frames, mediaType, platform, format, brand, topPosts, inspirationAccounts, transcript),
-        isVideo
-          ? getEditInstructions(frames, timestamps, duration, platform, transcript)
+      const transcriptText = transcriptResult?.text ?? null
+
+      // Analysis + thought block grouping run in parallel
+      const [analysis, thoughtBlocks] = await Promise.all([
+        analyzeMedia(frames, mediaType, platform, format, brand, topPosts, inspirationAccounts, transcriptText),
+        isVideo && transcriptResult
+          ? getThoughtBlocks(transcriptResult, duration)
           : Promise.resolve(null),
       ])
+
+      // Edit instructions need thought blocks first, then validation
+      let editInstructions = null
+      if (isVideo && thoughtBlocks && thoughtBlocks.length > 0) {
+        const rawInstructions = await getEditInstructions(thoughtBlocks, duration, platform)
+        editInstructions = await validateEditInstructions(thoughtBlocks, rawInstructions)
+      }
 
       // Post condensed analysis
       await client.chat.postMessage({
@@ -187,17 +196,23 @@ async function runAnalysis(
       })
 
       // If it's a video with edit instructions, produce and upload the 3 variants
-      if (isVideo && editInstructions) {
+      if (isVideo && editInstructions && thoughtBlocks) {
         await client.chat.postMessage({
           channel: channelId,
           thread_ts: threadTs,
           text: 'Generating 3 edited versions...',
         })
 
+        const toSegments = (sequence: number[]): VideoSegment[] =>
+          sequence
+            .map((i) => thoughtBlocks.find((b) => b.index === i))
+            .filter((b): b is ThoughtBlock => b !== undefined)
+            .map((b) => ({ start: b.start, end: b.end }))
+
         const [hookBPath, hookCPath, tightCutPath] = await Promise.all([
-          createVariant(filePath, editInstructions.hook_b.segments, 'hook-b'),
-          createVariant(filePath, editInstructions.hook_c.segments, 'hook-c'),
-          createVariant(filePath, editInstructions.tight_cut.segments, 'tight-cut'),
+          createVariant(filePath, toSegments(editInstructions.hook_b.block_sequence), 'hook-b'),
+          createVariant(filePath, toSegments(editInstructions.hook_c.block_sequence), 'hook-c'),
+          createVariant(filePath, toSegments(editInstructions.tight_cut.block_sequence), 'tight-cut'),
         ])
         editedPaths.push(hookBPath, hookCPath, tightCutPath)
 
@@ -238,19 +253,40 @@ async function uploadVideoToSlack(
 ): Promise<void> {
   const fileBuffer = await fs.readFile(filePath)
 
-  const formData = new FormData()
-  formData.append('token', token)
-  formData.append('channels', channelId)
-  formData.append('thread_ts', threadTs)
-  formData.append('filename', filename)
-  formData.append('initial_comment', initialComment)
-  formData.append('file', new Blob([fileBuffer], { type: 'video/mp4' }), filename)
+  // Step 1 — get an upload URL
+  const urlRes = await fetch(
+    `https://slack.com/api/files.getUploadURLExternal?filename=${encodeURIComponent(filename)}&length=${fileBuffer.byteLength}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const urlJson = await urlRes.json() as any
+  if (!urlJson.ok) throw new Error(`files.getUploadURLExternal failed for ${filename}: ${urlJson.error}`)
 
-  const res = await fetch('https://slack.com/api/files.upload', {
+  const { upload_url, file_id } = urlJson
+
+  // Step 2 — upload the file bytes
+  const uploadRes = await fetch(upload_url, {
     method: 'POST',
-    body: formData,
+    headers: { 'Content-Type': 'video/mp4' },
+    body: fileBuffer,
+  })
+  if (!uploadRes.ok) throw new Error(`Upload POST failed for ${filename}: ${uploadRes.status}`)
+
+  // Step 3 — complete the upload, posting it to the thread
+  const completeRes = await fetch('https://slack.com/api/files.completeUploadExternal', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      files: [{ id: file_id }],
+      channel_id: channelId,
+      initial_comment: initialComment,
+      thread_ts: threadTs,
+    }),
   })
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const json = await res.json() as any
-  if (!json.ok) throw new Error(`files.upload failed for ${filename}: ${json.error}`)
+  const completeJson = await completeRes.json() as any
+  if (!completeJson.ok) throw new Error(`files.completeUploadExternal failed for ${filename}: ${completeJson.error}`)
 }

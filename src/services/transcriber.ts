@@ -51,12 +51,23 @@ async function extractAudio(videoPath: string, audioPath: string): Promise<void>
   })
 }
 
+export interface TranscriptSegment {
+  start: number
+  end: number
+  text: string
+}
+
+export interface TranscriptResult {
+  text: string
+  segments: TranscriptSegment[]
+}
+
 /**
  * Transcribes a video file using OpenAI Whisper.
- * Returns the transcript string, or null if OPENAI_API_KEY is not set
- * or transcription fails.
+ * Returns timestamped segments so callers can identify precise cut points.
+ * Returns null if OPENAI_API_KEY is not set or transcription fails.
  */
-export async function transcribeVideo(videoPath: string): Promise<string | null> {
+export async function transcribeVideo(videoPath: string): Promise<TranscriptResult | null> {
   const client = getClient()
   if (!client) return null
 
@@ -68,11 +79,20 @@ export async function transcribeVideo(videoPath: string): Promise<string | null>
     const response = await client.audio.transcriptions.create({
       model: 'whisper-1',
       file: createReadStream(audioPath),
-      response_format: 'text',
+      response_format: 'verbose_json',
     })
 
-    const transcript = (response as unknown as string).trim()
-    return transcript.length > 0 ? transcript : null
+    // verbose_json returns an object with segments array
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = response as unknown as any
+    const segments: TranscriptSegment[] = (result.segments ?? []).map((s: any) => ({
+      start: s.start,
+      end: s.end,
+      text: s.text.trim(),
+    }))
+    const text = segments.map((s) => s.text).join(' ').trim()
+
+    return text.length > 0 ? { text, segments } : null
   } catch (err) {
     // Non-fatal — analysis continues with frames only
     console.warn('[transcriber] transcription failed, continuing without transcript:', err)

@@ -21,18 +21,26 @@ export interface VideoSegment {
   end: number
 }
 
+export interface ThoughtBlock {
+  index: number
+  start: number
+  end: number
+  summary: string  // one-line description of what this block covers
+  text: string     // full transcript text for this block
+}
+
 export interface EditInstructions {
   video_duration: number
   hook_b: {
     reason: string
-    segments: VideoSegment[]
+    block_sequence: number[]  // ordered block indices, e.g. [2, 0, 1, 3]
   }
   hook_c: {
     reason: string
-    segments: VideoSegment[]
+    block_sequence: number[]
   }
   tight_cut: {
-    segments: VideoSegment[]
+    block_sequence: number[]
   }
 }
 
