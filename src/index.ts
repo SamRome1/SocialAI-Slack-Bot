@@ -2,6 +2,12 @@ import 'dotenv/config'
 import http from 'http'
 import { createApp } from './bot'
 
+// OpenAI SDK requires `File` as a global for audio uploads — polyfill for Node < 20
+if (!globalThis.File) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(globalThis as any).File = (require('node:buffer') as typeof import('node:buffer')).File
+}
+
 // @slack/socket-mode's finity state machine throws when Slack sends
 // "server explicit disconnect" while still in the "connecting" state.
 // Catch it here so the built-in reconnect loop can recover without
