@@ -167,6 +167,12 @@ async function runAnalysis(
       mediaType = extractResult.mediaType
       transcriptResult = transcriptRaw
 
+      if (isVideo) {
+        logger.info('[runAnalysis] transcription result:', transcriptResult
+          ? `${transcriptResult.segments.length} segments, ${transcriptResult.text.length} chars`
+          : 'null (no speech / key missing / error)')
+      }
+
       const { brand, topPosts } = await getBrandContext(platform)
       const inspirationAccounts = getInspirationAccounts(platform)
 
@@ -180,10 +186,17 @@ async function runAnalysis(
           : Promise.resolve(null),
       ])
 
+      if (isVideo) {
+        logger.info('[runAnalysis] thought blocks:', thoughtBlocks
+          ? `${thoughtBlocks.length} blocks`
+          : 'null')
+      }
+
       // Edit instructions need thought blocks first
       let editInstructions = null
       if (isVideo && thoughtBlocks && thoughtBlocks.length > 0) {
         editInstructions = await getEditInstructions(thoughtBlocks, duration, platform)
+        logger.info('[runAnalysis] edit instructions:', editInstructions ? 'ok' : 'null')
       }
 
       // Post condensed analysis
@@ -208,20 +221,51 @@ async function runAnalysis(
             .filter((b): b is ThoughtBlock => b !== undefined)
             .map((b) => ({ start: b.start, end: b.end }))
 
-        const [hookBPath, hookCPath, tightCutPath] = await Promise.all([
-          createVariant(filePath, toSegments(editInstructions.hook_b.block_sequence), 'hook-b'),
-          createVariant(filePath, toSegments(editInstructions.hook_c.block_sequence), 'hook-c'),
-          createVariant(filePath, toSegments(editInstructions.tight_cut.block_sequence), 'tight-cut'),
-        ])
-        editedPaths.push(hookBPath, hookCPath, tightCutPath)
+        const hookBSegs = toSegments(editInstructions.hook_b.block_sequence)
+        const hookCSegs = toSegments(editInstructions.hook_c.block_sequence)
+        const tightCutSegs = toSegments(editInstructions.tight_cut.block_sequence)
 
-        // Upload all 3 files to the thread
-        const token = process.env.SLACK_BOT_TOKEN!
-        await Promise.all([
-          uploadVideoToSlack(token, hookBPath, `hook-b.mp4`, `*Hook B* — ${editInstructions.hook_b.reason}`, channelId, threadTs),
-          uploadVideoToSlack(token, hookCPath, `hook-c.mp4`, `*Hook C* — ${editInstructions.hook_c.reason}`, channelId, threadTs),
-          uploadVideoToSlack(token, tightCutPath, `tight-cut.mp4`, `*Tight Cut* — Original order, slow parts removed`, channelId, threadTs),
-        ])
+        if (hookBSegs.length === 0 || hookCSegs.length === 0 || tightCutSegs.length === 0) {
+          logger.error('[runAnalysis] one or more variants resolved to empty segments', {
+            hookB: editInstructions.hook_b.block_sequence,
+            hookC: editInstructions.hook_c.block_sequence,
+            tightCut: editInstructions.tight_cut.block_sequence,
+            availableIndices: thoughtBlocks.map((b) => b.index),
+          })
+          await client.chat.postMessage({
+            channel: channelId,
+            thread_ts: threadTs,
+            text: ':warning: Could not generate video variants — block mapping failed. Check logs.',
+          })
+        } else {
+          const [hookBPath, hookCPath, tightCutPath] = await Promise.all([
+            createVariant(filePath, hookBSegs, 'hook-b'),
+            createVariant(filePath, hookCSegs, 'hook-c'),
+            createVariant(filePath, tightCutSegs, 'tight-cut'),
+          ])
+          editedPaths.push(hookBPath, hookCPath, tightCutPath)
+
+          // Upload all 3 files to the thread
+          const token = process.env.SLACK_BOT_TOKEN!
+          await Promise.all([
+            uploadVideoToSlack(token, hookBPath, `hook-b.mp4`, `*Hook B* — ${editInstructions.hook_b.reason}`, channelId, threadTs),
+            uploadVideoToSlack(token, hookCPath, `hook-c.mp4`, `*Hook C* — ${editInstructions.hook_c.reason}`, channelId, threadTs),
+            uploadVideoToSlack(token, tightCutPath, `tight-cut.mp4`, `*Tight Cut* — Original order, slow parts removed`, channelId, threadTs),
+          ])
+        }
+      } else if (isVideo) {
+        // Surface the reason video variants were skipped
+        const reason = !transcriptResult
+          ? 'No speech was detected in the video (or transcription is unavailable). Video variants require a spoken transcript.'
+          : !thoughtBlocks || thoughtBlocks.length === 0
+            ? 'Could not identify story blocks from the transcript. The video may be too short or lack distinct beats.'
+            : 'Edit instructions could not be generated.'
+        logger.warn('[runAnalysis] skipping video variants:', reason)
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          text: `:information_source: Video variants skipped — ${reason}`,
+        })
       }
     } finally {
       await cleanup()
