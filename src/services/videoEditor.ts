@@ -49,8 +49,8 @@ export async function createVariant(
           '-c:v libx264',
           '-c:a aac',
           '-movflags +faststart',
-          '-preset fast',
-          '-crf 23',
+          '-preset ultrafast',
+          '-crf 26',
         ])
         .output(outputPath)
         .on('end', () => resolve(outputPath))

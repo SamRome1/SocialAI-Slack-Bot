@@ -208,20 +208,22 @@ async function runAnalysis(
             .filter((b): b is ThoughtBlock => b !== undefined)
             .map((b) => ({ start: b.start, end: b.end }))
 
-        const [hookBPath, hookCPath, tightCutPath] = await Promise.all([
-          createVariant(filePath, toSegments(editInstructions.hook_b.block_sequence), 'hook-b'),
-          createVariant(filePath, toSegments(editInstructions.hook_c.block_sequence), 'hook-c'),
-          createVariant(filePath, toSegments(editInstructions.tight_cut.block_sequence), 'tight-cut'),
-        ])
-        editedPaths.push(hookBPath, hookCPath, tightCutPath)
-
-        // Upload all 3 files to the thread
+        // Encode → upload → delete sequentially: three parallel libx264 encodes at
+        // preset=fast exceed the 954 MB cgroup limit (each needs ~300 MB for lookahead buffers)
         const token = process.env.SLACK_BOT_TOKEN!
-        await Promise.all([
-          uploadVideoToSlack(token, hookBPath, `hook-b.mp4`, `*Hook B* — ${editInstructions.hook_b.reason}`, channelId, threadTs),
-          uploadVideoToSlack(token, hookCPath, `hook-c.mp4`, `*Hook C* — ${editInstructions.hook_c.reason}`, channelId, threadTs),
-          uploadVideoToSlack(token, tightCutPath, `tight-cut.mp4`, `*Tight Cut* — Original order, slow parts removed`, channelId, threadTs),
-        ])
+        const variants = [
+          { segs: toSegments(editInstructions.hook_b.block_sequence), label: 'hook-b', caption: `*Hook B* — ${editInstructions.hook_b.reason}` },
+          { segs: toSegments(editInstructions.hook_c.block_sequence), label: 'hook-c', caption: `*Hook C* — ${editInstructions.hook_c.reason}` },
+          { segs: toSegments(editInstructions.tight_cut.block_sequence), label: 'tight-cut', caption: `*Tight Cut* — Original order, slow parts removed` },
+        ]
+        for (const v of variants) {
+          const variantPath = await createVariant(filePath, v.segs, v.label)
+          try {
+            await uploadVideoToSlack(token, variantPath, `${v.label}.mp4`, v.caption, channelId, threadTs)
+          } finally {
+            await fs.unlink(variantPath).catch(() => {})
+          }
+        }
       }
     } finally {
       await cleanup()
