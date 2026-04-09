@@ -32,6 +32,10 @@ export async function createVariant(
 ): Promise<string> {
   if (segments.length === 0) throw new Error(`No segments provided for variant "${label}"`)
 
+  const mem = process.memoryUsage()
+  console.log(`[videoEditor] ${label} starting — heap: ${(mem.heapUsed / 1024 / 1024).toFixed(0)} MB used / ${(mem.heapTotal / 1024 / 1024).toFixed(0)} MB total, rss: ${(mem.rss / 1024 / 1024).toFixed(0)} MB`)
+  console.log(`[videoEditor] ${label} segments:`, segments.map(s => `${s.start.toFixed(2)}-${s.end.toFixed(2)}s`))
+
   const outputPath = path.join(os.tmpdir(), `socialai-${label}-${randomUUID()}.mp4`)
 
   return new Promise((resolve, reject) => {

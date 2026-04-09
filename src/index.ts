@@ -1,5 +1,7 @@
 import 'dotenv/config'
 import http from 'http'
+import fs from 'fs'
+import { execSync, spawnSync } from 'child_process'
 import { createApp } from './bot'
 
 // OpenAI SDK requires `File` as a global for audio uploads — polyfill for Node < 20
@@ -21,7 +23,78 @@ process.on('uncaughtException', (err: Error) => {
   process.exit(1)
 })
 
+function logStartupDiagnostics() {
+  console.log('=== STARTUP DIAGNOSTICS ===')
+
+  // Node version
+  console.log('[diag] Node version:', process.version)
+
+  // Memory limit from cgroup (Linux/Railway)
+  try {
+    const cgroupLimit = fs.readFileSync('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'utf8').trim()
+    const limitMB = parseInt(cgroupLimit) / 1024 / 1024
+    console.log('[diag] cgroup memory limit:', limitMB < 99999 ? `${limitMB.toFixed(0)} MB` : 'unlimited')
+  } catch {
+    try {
+      // cgroup v2
+      const cgroupMax = fs.readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim()
+      const limitMB = cgroupMax === 'max' ? 'unlimited' : `${(parseInt(cgroupMax) / 1024 / 1024).toFixed(0)} MB`
+      console.log('[diag] cgroup v2 memory limit:', limitMB)
+    } catch {
+      console.log('[diag] cgroup memory limit: could not read')
+    }
+  }
+
+  // Available system memory
+  try {
+    const meminfo = fs.readFileSync('/proc/meminfo', 'utf8')
+    const total = meminfo.match(/MemTotal:\s+(\d+)/)?.[1]
+    const available = meminfo.match(/MemAvailable:\s+(\d+)/)?.[1]
+    if (total && available) {
+      console.log(`[diag] system memory: ${(parseInt(total) / 1024).toFixed(0)} MB total, ${(parseInt(available) / 1024).toFixed(0)} MB available`)
+    }
+  } catch {
+    console.log('[diag] /proc/meminfo: not available')
+  }
+
+  // Which ffmpeg binary is in PATH
+  try {
+    const ffmpegPath = execSync('which ffmpeg', { encoding: 'utf8' }).trim()
+    console.log('[diag] ffmpeg in PATH:', ffmpegPath)
+
+    // Can it actually run?
+    const result = spawnSync(ffmpegPath, ['-version'], { encoding: 'utf8', timeout: 5000 })
+    if (result.status === 0) {
+      const version = result.stdout.split('\n')[0]
+      console.log('[diag] ffmpeg -version:', version)
+    } else {
+      console.log('[diag] ffmpeg -version FAILED — signal:', result.signal, 'status:', result.status)
+    }
+  } catch {
+    console.log('[diag] ffmpeg not found in PATH — will use ffmpeg-static')
+
+    // Test ffmpeg-static binary directly
+    try {
+      const ffmpegStatic = require('ffmpeg-static') as string
+      console.log('[diag] ffmpeg-static path:', ffmpegStatic)
+      const result = spawnSync(ffmpegStatic, ['-version'], { encoding: 'utf8', timeout: 5000 })
+      if (result.status === 0) {
+        const version = result.stdout.split('\n')[0]
+        console.log('[diag] ffmpeg-static -version:', version)
+      } else {
+        console.log('[diag] ffmpeg-static -version FAILED — signal:', result.signal, 'status:', result.status, '← THIS IS THE BUG')
+      }
+    } catch (e) {
+      console.log('[diag] ffmpeg-static test threw:', e)
+    }
+  }
+
+  console.log('=== END DIAGNOSTICS ===')
+}
+
 async function main() {
+  logStartupDiagnostics()
+
   const app = createApp()
   const port = parseInt(process.env.PORT ?? '3000', 10)
   await app.start(port)
