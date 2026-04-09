@@ -1,12 +1,24 @@
 import ffmpeg from 'fluent-ffmpeg'
-import ffmpegPath from 'ffmpeg-static'
+import ffmpegStatic from 'ffmpeg-static'
 import ffprobePath from '@ffprobe-installer/ffprobe'
+import { execSync } from 'child_process'
 import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import type { VideoSegment } from '../types'
 
-ffmpeg.setFfmpegPath(ffmpegPath as string)
+const resolvedFfmpegPath = (() => {
+  try {
+    const p = execSync('which ffmpeg', { encoding: 'utf8' }).trim()
+    console.log('[videoEditor] using system ffmpeg:', p)
+    return p
+  } catch {
+    console.log('[videoEditor] system ffmpeg not found, falling back to ffmpeg-static:', ffmpegStatic)
+    return ffmpegStatic as string
+  }
+})()
+
+ffmpeg.setFfmpegPath(resolvedFfmpegPath)
 ffmpeg.setFfprobePath(ffprobePath.path)
 
 /**
