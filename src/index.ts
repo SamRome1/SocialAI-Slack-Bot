@@ -89,6 +89,34 @@ function logStartupDiagnostics() {
     }
   }
 
+  // Codec tests — synthetic 1-second 320x240 video, no user input needed
+  const ffmpegBin = (() => {
+    try { return execSync('which ffmpeg', { encoding: 'utf8' }).trim() } catch { return null }
+  })() ?? (require('ffmpeg-static') as string)
+
+  const codecTests = [
+    { label: 'libx264 (default)',   args: ['-c:v', 'libx264', '-preset', 'ultrafast'] },
+    { label: 'libx264 no-asm',      args: ['-c:v', 'libx264', '-preset', 'ultrafast', '-x264opts', 'no-asm'] },
+    { label: 'mpeg4',               args: ['-c:v', 'mpeg4', '-q:v', '5'] },
+  ]
+
+  for (const test of codecTests) {
+    const outPath = `/tmp/diag-${test.label.replace(/\s+/g, '-')}.mp4`
+    const result = spawnSync(ffmpegBin, [
+      '-f', 'lavfi', '-i', 'testsrc=duration=1:size=320x240:rate=25',
+      '-f', 'lavfi', '-i', 'sine=duration=1',
+      ...test.args,
+      '-c:a', 'aac', '-t', '1', '-y', outPath,
+    ], { encoding: 'utf8', timeout: 15000 })
+
+    if (result.status === 0) {
+      console.log(`[diag] codec test "${test.label}": ✓ OK`)
+    } else {
+      console.log(`[diag] codec test "${test.label}": ✗ FAILED — signal: ${result.signal}, status: ${result.status}`)
+      if (result.stderr) console.log(`[diag]   stderr: ${result.stderr.split('\n').slice(-3).join(' | ')}`)
+    }
+  }
+
   console.log('=== END DIAGNOSTICS ===')
 }
 
