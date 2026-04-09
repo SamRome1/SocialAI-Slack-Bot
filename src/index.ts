@@ -117,6 +117,68 @@ function logStartupDiagnostics() {
     }
   }
 
+  // filter_complex test — same structure as real variant encoding:
+  // 3 segments from one source, trim+fade+concat, libx264 output.
+  // Uses a 30-second 1280x720 synthetic source to simulate real content.
+  const filterComplexTests = [
+    {
+      label: 'filter_complex 3-segment (no split)',
+      filterComplex: [
+        '[0:v]trim=start=0:duration=5,setpts=PTS-STARTPTS[v0]',
+        '[0:a]atrim=start=0:duration=5,asetpts=PTS-STARTPTS[a0]',
+        '[0:v]trim=start=10:duration=5,setpts=PTS-STARTPTS[v1]',
+        '[0:a]atrim=start=10:duration=5,asetpts=PTS-STARTPTS[a1]',
+        '[0:v]trim=start=20:duration=5,setpts=PTS-STARTPTS[v2]',
+        '[0:a]atrim=start=20:duration=5,asetpts=PTS-STARTPTS[a2]',
+        '[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[outv][outa]',
+      ].join(';'),
+    },
+    {
+      label: 'filter_complex 3-segment (explicit split)',
+      filterComplex: [
+        '[0:v]split=3[vin0][vin1][vin2]',
+        '[0:a]asplit=3[ain0][ain1][ain2]',
+        '[vin0]trim=start=0:duration=5,setpts=PTS-STARTPTS[v0]',
+        '[ain0]atrim=start=0:duration=5,asetpts=PTS-STARTPTS[a0]',
+        '[vin1]trim=start=10:duration=5,setpts=PTS-STARTPTS[v1]',
+        '[ain1]atrim=start=10:duration=5,asetpts=PTS-STARTPTS[a1]',
+        '[vin2]trim=start=20:duration=5,setpts=PTS-STARTPTS[v2]',
+        '[ain2]atrim=start=20:duration=5,asetpts=PTS-STARTPTS[a2]',
+        '[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[outv][outa]',
+      ].join(';'),
+    },
+  ]
+
+  // Generate a 30s 1280x720 synthetic source once, then test both filter approaches on it
+  const synthSrc = '/tmp/diag-synth-source.mp4'
+  const synthResult = spawnSync(ffmpegBin, [
+    '-f', 'lavfi', '-i', 'testsrc=duration=30:size=1280x720:rate=25',
+    '-f', 'lavfi', '-i', 'sine=duration=30',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-y', synthSrc,
+  ], { encoding: 'utf8', timeout: 30000 })
+
+  if (synthResult.status !== 0) {
+    console.log('[diag] filter_complex test: could not create synthetic source — skipping')
+  } else {
+    for (const test of filterComplexTests) {
+      const outPath = `/tmp/diag-fc-${filterComplexTests.indexOf(test)}.mp4`
+      const result = spawnSync(ffmpegBin, [
+        '-i', synthSrc,
+        '-filter_complex', test.filterComplex,
+        '-map', '[outv]', '-map', '[outa]',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '26', '-c:a', 'aac',
+        '-y', outPath,
+      ], { encoding: 'utf8', timeout: 30000 })
+
+      if (result.status === 0) {
+        console.log(`[diag] filter_complex test "${test.label}": ✓ OK`)
+      } else {
+        console.log(`[diag] filter_complex test "${test.label}": ✗ FAILED — signal: ${result.signal}, status: ${result.status}`)
+        if (result.stderr) console.log(`[diag]   stderr: ${result.stderr.split('\n').slice(-3).join(' | ')}`)
+      }
+    }
+  }
+
   console.log('=== END DIAGNOSTICS ===')
 }
 
