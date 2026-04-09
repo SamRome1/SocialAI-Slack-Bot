@@ -66,12 +66,19 @@ export async function createVariant(
     const audioFilters: string[] = []
     const concatInputs: string[] = []
 
+    // Explicitly split the input streams once per segment count.
+    // Without this, FFmpeg fans out [0:v]/[0:a] implicitly which causes SIGKILL
+    // on Railway (confirmed via diagnostic test).
+    const n = segments.length
+    videoFilters.push(`[0:v]split=${n}${Array.from({ length: n }, (_, i) => `[vin${i}]`).join('')}`)
+    audioFilters.push(`[0:a]asplit=${n}${Array.from({ length: n }, (_, i) => `[ain${i}]`).join('')}`)
+
     segments.forEach((seg, i) => {
       const duration = seg.end - seg.start
       const fadeOutStart = Math.max(0, duration - FADE_DURATION)
-      videoFilters.push(`[0:v]trim=start=${seg.start}:duration=${duration},setpts=PTS-STARTPTS[v${i}]`)
+      videoFilters.push(`[vin${i}]trim=start=${seg.start}:duration=${duration},setpts=PTS-STARTPTS[v${i}]`)
       audioFilters.push(
-        `[0:a]atrim=start=${seg.start}:duration=${duration},asetpts=PTS-STARTPTS,` +
+        `[ain${i}]atrim=start=${seg.start}:duration=${duration},asetpts=PTS-STARTPTS,` +
         `afade=t=in:st=0:d=${FADE_DURATION},afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${FADE_DURATION}[a${i}]`,
       )
       concatInputs.push(`[v${i}][a${i}]`)
