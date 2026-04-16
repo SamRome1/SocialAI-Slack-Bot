@@ -73,3 +73,22 @@ export const PLATFORM_DEFAULT_FORMAT: Record<Platform, string> = {
   youtube_long: 'Long-form Video',
   facebook: 'Reel',
 }
+
+export interface ConversationTurn {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: number
+}
+
+export interface ThreadSession {
+  threadTs: string
+  channelId: string
+  platform: Platform
+  analysis: MediaAnalysis
+  thoughtBlocks: ThoughtBlock[]
+  editInstructions: EditInstructions
+  localFilePath: string
+  conversationHistory: ConversationTurn[]
+  createdAt: number
+  lastActivityAt: number
+}

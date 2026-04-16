@@ -3,6 +3,7 @@ import http from 'http'
 import fs from 'fs'
 import { execSync, spawnSync } from 'child_process'
 import { createApp } from './bot'
+import { evictExpiredSessions } from './services/sessionStore'
 
 // OpenAI SDK requires `File` as a global for audio uploads — polyfill for Node < 20
 if (!globalThis.File) {
@@ -196,6 +197,9 @@ async function main() {
       res.end(req.url === '/health' ? 'ok' : '')
     }).listen(port)
   }
+
+  // Evict expired sessions (and their temp files) every 30 minutes
+  setInterval(() => { evictExpiredSessions().catch(() => {}) }, 30 * 60 * 1000)
 
   const mode = process.env.SLACK_MODE === 'http' ? 'HTTP' : 'Socket Mode'
   console.log(`⚡ SocialAI Slack bot running — ${mode}, port: ${port}`)

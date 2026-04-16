@@ -1,5 +1,6 @@
 import { App, LogLevel } from '@slack/bolt'
 import { registerAppMentionHandler, registerPlatformActionHandler } from './handlers/appMention'
+import { registerThreadMessageHandler } from './handlers/threadMessage'
 
 export function createApp(): App {
   const isSocketMode = process.env.SLACK_MODE !== 'http'
@@ -15,6 +16,7 @@ export function createApp(): App {
 
   registerAppMentionHandler(app)
   registerPlatformActionHandler(app)
+  registerThreadMessageHandler(app)
 
   // Health check for Railway
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

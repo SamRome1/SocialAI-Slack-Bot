@@ -6,6 +6,8 @@ import { transcribeVideo, type TranscriptResult } from '../services/transcriber'
 import { analyzeMedia, getThoughtBlocks, getEditInstructions } from '../services/claude'
 import { createVariant } from '../services/videoEditor'
 import { getAnalysisContext } from '../services/socialManager'
+import { uploadVideoToSlack } from '../services/slackUploader'
+import { setSession } from '../services/sessionStore'
 import { buildPlatformPickerBlocks, buildAnalyzingBlocks, buildAnalysisBlocks } from '../formatters/slackBlocks'
 import type { BrandContext, Platform, ThoughtBlock, VideoSegment } from '../types'
 import { PLATFORM_DEFAULT_FORMAT } from '../types'
@@ -155,6 +157,7 @@ async function runAnalysis(
     let duration: number
     let mediaType: 'image' | 'video'
     let transcriptResult: TranscriptResult | null = null
+    let sessionWritten = false
 
     try {
       const [extractResult, transcriptRaw] = await Promise.all([
@@ -224,9 +227,31 @@ async function runAnalysis(
             await fs.unlink(variantPath).catch(() => {})
           }
         }
+
+        // Persist session so follow-up messages can reference this analysis
+        setSession(threadTs, {
+          threadTs,
+          channelId,
+          platform,
+          analysis,
+          thoughtBlocks,
+          editInstructions,
+          localFilePath: filePath,
+          conversationHistory: [],
+          createdAt: Date.now(),
+          lastActivityAt: Date.now(),
+        })
+        sessionWritten = true
+
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          text: '_Reply here to request a custom edit or ask how a change would affect the score._',
+        })
       }
     } finally {
-      await cleanup()
+      // Only clean up the original file if no session holds a reference to it
+      if (!sessionWritten) await cleanup()
     }
   } catch (err) {
     logger.error('runAnalysis error:', err)
@@ -244,50 +269,3 @@ async function runAnalysis(
   }
 }
 
-async function uploadVideoToSlack(
-  token: string,
-  filePath: string,
-  filename: string,
-  initialComment: string,
-  channelId: string,
-  threadTs: string,
-): Promise<void> {
-  const fileBuffer = await fs.readFile(filePath)
-
-  // Step 1 — get an upload URL
-  const urlRes = await fetch(
-    `https://slack.com/api/files.getUploadURLExternal?filename=${encodeURIComponent(filename)}&length=${fileBuffer.byteLength}`,
-    { headers: { Authorization: `Bearer ${token}` } },
-  )
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const urlJson = await urlRes.json() as any
-  if (!urlJson.ok) throw new Error(`files.getUploadURLExternal failed for ${filename}: ${urlJson.error}`)
-
-  const { upload_url, file_id } = urlJson
-
-  // Step 2 — upload the file bytes
-  const uploadRes = await fetch(upload_url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'video/mp4' },
-    body: fileBuffer,
-  })
-  if (!uploadRes.ok) throw new Error(`Upload POST failed for ${filename}: ${uploadRes.status}`)
-
-  // Step 3 — complete the upload, posting it to the thread
-  const completeRes = await fetch('https://slack.com/api/files.completeUploadExternal', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      files: [{ id: file_id }],
-      channel_id: channelId,
-      initial_comment: initialComment,
-      thread_ts: threadTs,
-    }),
-  })
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const completeJson = await completeRes.json() as any
-  if (!completeJson.ok) throw new Error(`files.completeUploadExternal failed for ${filename}: ${completeJson.error}`)
-}

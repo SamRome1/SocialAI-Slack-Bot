@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { MediaAnalysis, BrandContext, EditInstructions, ThoughtBlock } from '../types'
+import type { MediaAnalysis, BrandContext, EditInstructions, ThoughtBlock, ThreadSession } from '../types'
 import type { TopPost } from './socialManager'
 import type { TranscriptResult } from './transcriber'
 
@@ -424,5 +424,110 @@ Return ONLY valid JSON:
     hook_b: { reason: instructions.hook_b.reason, block_sequence: validated.hook_b.block_sequence },
     hook_c: { reason: instructions.hook_c.reason, block_sequence: validated.hook_c.block_sequence },
     tight_cut: { block_sequence: validated.tight_cut.block_sequence },
+  }
+}
+
+// ── Follow-up conversation ────────────────────────────────────────────────────
+
+export type FollowUpIntent =
+  | { type: 'prediction'; reasoning: string; estimatedScoreDelta: number | null }
+  | { type: 'new_edit'; blockSequence: number[]; label: string; reason: string }
+  | { type: 'clarification'; response: string }
+
+export async function classifyAndRespondToFollowUp(
+  userMessage: string,
+  session: ThreadSession,
+): Promise<FollowUpIntent> {
+  const client = getClient()
+
+  const blockList = session.thoughtBlocks
+    .map((b) => `Block ${b.index} [${b.start.toFixed(1)}s–${b.end.toFixed(1)}s]: "${b.summary}"`)
+    .join('\n')
+
+  const { hook_b, hook_c, tight_cut } = session.editInstructions
+
+  const historyLines = session.conversationHistory.slice(-20)
+    .map((t) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.content}`)
+    .join('\n')
+
+  const prompt = `You are a video editing assistant helping a creator iterate on their content.
+
+ORIGINAL ANALYSIS:
+Overall score: ${session.analysis.overall_score}/100
+Hook strength: ${session.analysis.hook_strength}/100
+Platform: ${session.platform}
+Summary: ${session.analysis.summary}
+
+VIDEO STRUCTURE (thought blocks):
+${blockList}
+
+EXISTING VARIANTS:
+Hook B [blocks ${hook_b.block_sequence.join(',')}]: ${hook_b.reason}
+Hook C [blocks ${hook_c.block_sequence.join(',')}]: ${hook_c.reason}
+Tight Cut [blocks ${tight_cut.block_sequence.join(',')}]: Original order, slow parts removed
+
+${historyLines ? `CONVERSATION HISTORY:\n${historyLines}\n` : ''}
+USER'S MESSAGE:
+"${userMessage}"
+
+Determine what the user wants:
+- "prediction": They want to know how a proposed change would affect performance — answer without making a new edit
+- "new_edit": They want you to actually create a new edited version with specific block choices
+- "clarification": The request is ambiguous, references something that doesn't exist, or needs more info before you can act
+
+Return ONLY valid JSON (no markdown, no extra text):
+{
+  "type": "prediction" | "new_edit" | "clarification",
+
+  "reasoning": "<if prediction: 2-3 sentences analyzing the proposed change and why it would help or hurt. Omit for other types.>",
+  "estimated_score_delta": <if prediction: integer -30 to +30 representing estimated overall score change, or null if too uncertain. Omit for other types.>,
+
+  "block_sequence": [<if new_edit: block indices in playback order>],
+  "label": "<if new_edit: short kebab-case name, e.g. 'custom-1'>",
+  "reason": "<if new_edit: one sentence describing this cut>",
+
+  "response": "<if clarification: the question or explanation to send back to the user>"
+}`
+
+  const message = await client.messages.create({
+    model: MODEL,
+    max_tokens: 512,
+    messages: [{ role: 'user', content: prompt }],
+  })
+
+  const raw = message.content[0].type === 'text' ? message.content[0].text : ''
+  const jsonMatch = raw.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error('Claude did not return valid JSON for follow-up')
+
+  const parsed = JSON.parse(jsonMatch[0]) as {
+    type: 'prediction' | 'new_edit' | 'clarification'
+    reasoning?: string
+    estimated_score_delta?: number | null
+    block_sequence?: number[]
+    label?: string
+    reason?: string
+    response?: string
+  }
+
+  if (parsed.type === 'prediction') {
+    return {
+      type: 'prediction',
+      reasoning: parsed.reasoning ?? '',
+      estimatedScoreDelta: parsed.estimated_score_delta ?? null,
+    }
+  }
+
+  if (parsed.type === 'new_edit') {
+    return {
+      type: 'new_edit',
+      blockSequence: parsed.block_sequence ?? [],
+      label: parsed.label ?? 'custom',
+      reason: parsed.reason ?? '',
+    }
+  }
+
+  return {
+    type: 'clarification',
+    response: parsed.response ?? "I didn't quite understand — could you clarify what you'd like?",
   }
 }
