@@ -1,5 +1,5 @@
 import { App, LogLevel } from '@slack/bolt'
-import { registerAppMentionHandler, registerPlatformActionHandler } from './handlers/appMention'
+import { registerAppMentionHandler, registerPlatformActionHandler, registerThumbnailActionHandler } from './handlers/appMention'
 import { registerThreadMessageHandler } from './handlers/threadMessage'
 
 export function createApp(): App {
@@ -16,6 +16,7 @@ export function createApp(): App {
 
   registerAppMentionHandler(app)
   registerPlatformActionHandler(app)
+  registerThumbnailActionHandler(app)
   registerThreadMessageHandler(app)
 
   // Health check for Railway

@@ -6,7 +6,8 @@ export interface TopPost {
   score: number | null
   likes: number
   comments: number
-  shares: number
+  shares?: number
+  average_watch_time?: number  // seconds
   reach: number
   posted_at: string
 }

@@ -7,8 +7,10 @@ import { analyzeMedia, getThoughtBlocks, getEditInstructions } from '../services
 import { createVariant } from '../services/videoEditor'
 import { getAnalysisContext } from '../services/socialManager'
 import { uploadVideoToSlack } from '../services/slackUploader'
-import { setSession } from '../services/sessionStore'
-import { buildPlatformPickerBlocks, buildAnalyzingBlocks, buildAnalysisBlocks } from '../formatters/slackBlocks'
+import { setSession, getSession } from '../services/sessionStore'
+import { generateThumbnailAndTitleIdeas } from '../services/claude'
+import { buildPlatformPickerBlocks, buildAnalyzingBlocks, buildAnalysisBlocks, buildThoughtBlockMapBlocks, buildThumbnailIdeasBlocks } from '../formatters/slackBlocks'
+import { youtubeTopVideos } from '../data/youtubeTopVideos'
 import type { BrandContext, Platform, ThoughtBlock, VideoSegment } from '../types'
 import { PLATFORM_DEFAULT_FORMAT } from '../types'
 
@@ -36,14 +38,18 @@ function getInspirationAccounts(platform: string): string[] {
 async function getBrandContext(platform: string): Promise<{ brand: BrandContext; topPosts: import('../services/socialManager').TopPost[] }> {
   const context = await getAnalysisContext(platform)
   if (context) return { brand: context.brand, topPosts: context.topPosts }
-  return {
-    brand: {
-      brand_name: process.env.BRAND_NAME ?? 'My Brand',
-      niche: process.env.BRAND_NICHE ?? 'content creation',
-      tone: process.env.BRAND_TONE ?? 'professional',
-    },
-    topPosts: [],
+
+  const brand: BrandContext = {
+    brand_name: process.env.BRAND_NAME ?? 'My Brand',
+    niche: process.env.BRAND_NICHE ?? 'content creation',
+    tone: process.env.BRAND_TONE ?? 'professional',
   }
+
+  // Use static YouTube benchmarks for YouTube platforms
+  const isYoutube = platform === 'youtube' || platform === 'youtube_long'
+  const staticTopPosts = isYoutube ? youtubeTopVideos.filter((v) => v.content.trim().length > 0) : []
+
+  return { brand, topPosts: staticTopPosts }
 }
 
 export function registerAppMentionHandler(app: App) {
@@ -194,11 +200,40 @@ async function runAnalysis(
         channel: channelId,
         thread_ts: threadTs,
         text: `Analysis complete — Overall score: ${analysis.overall_score}/100`,
-        blocks: buildAnalysisBlocks(analysis, platform, format),
+        blocks: buildAnalysisBlocks(analysis, platform, format, { channelId, threadTs }),
       })
 
-      // If it's a video with edit instructions, produce and upload the 3 variants
-      if (isVideo && editInstructions && thoughtBlocks) {
+      if (isLongForm && isVideo && thoughtBlocks && thoughtBlocks.length > 0) {
+        // Longform: show content structure, save session for follow-up + thumbnail button
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          text: 'Content structure:',
+          blocks: buildThoughtBlockMapBlocks(thoughtBlocks),
+        })
+
+        setSession(threadTs, {
+          threadTs,
+          channelId,
+          platform,
+          analysis,
+          thoughtBlocks,
+          editInstructions: null,
+          localFilePath: filePath,
+          conversationHistory: [],
+          createdAt: Date.now(),
+          lastActivityAt: Date.now(),
+        })
+        sessionWritten = true
+
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          text: '_Reply here to ask how a change would affect the score._',
+        })
+
+      } else if (!isLongForm && isVideo && editInstructions && thoughtBlocks) {
+        // Short-form: produce and upload the 3 variants
         await client.chat.postMessage({
           channel: channelId,
           thread_ts: threadTs,
@@ -228,7 +263,6 @@ async function runAnalysis(
           }
         }
 
-        // Persist session so follow-up messages can reference this analysis
         setSession(threadTs, {
           threadTs,
           channelId,
@@ -267,5 +301,55 @@ async function runAnalysis(
     // Clean up edited output files
     await Promise.allSettled(editedPaths.map((p) => fs.unlink(p)))
   }
+}
+
+export function registerThumbnailActionHandler(app: import('@slack/bolt').App) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app.action('generate_thumbnails', async ({ ack, action, client, logger }: any) => {
+    await ack()
+
+    const [channelId, threadTs] = (action.value as string).split('|')
+
+    const session = getSession(threadTs)
+    if (!session) {
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text: ':x: Session expired — please re-upload the video to start a new analysis.',
+      })
+      return
+    }
+
+    let thinkingTs: string | undefined
+    try {
+      const res = await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text: ':hourglass_flowing_sand: Generating thumbnail and title ideas...',
+      })
+      thinkingTs = res.ts
+    } catch { /* non-fatal */ }
+
+    try {
+      const ideas = await generateThumbnailAndTitleIdeas(session.analysis, session.thoughtBlocks)
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text: 'Thumbnail & title ideas:',
+        blocks: buildThumbnailIdeasBlocks(ideas),
+      })
+    } catch (err) {
+      logger.error('generate_thumbnails error:', err)
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text: ':x: Failed to generate ideas. Please try again.',
+      })
+    } finally {
+      if (thinkingTs) {
+        await client.chat.delete({ channel: channelId, ts: thinkingTs }).catch(() => {})
+      }
+    }
+  })
 }
 

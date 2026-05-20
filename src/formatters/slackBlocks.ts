@@ -1,5 +1,5 @@
 import type { KnownBlock } from '@slack/bolt'
-import type { MediaAnalysis, Platform } from '../types'
+import type { MediaAnalysis, Platform, ThoughtBlock, ThumbnailIdeas } from '../types'
 import { PLATFORM_LABELS } from '../types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -65,6 +65,7 @@ export function buildAnalysisBlocks(
   analysis: MediaAnalysis,
   platform: Platform,
   format: string,
+  options?: { channelId?: string; threadTs?: string },
 ): KnownBlock[] {
   const label = PLATFORM_LABELS[platform]
   const blocks: object[] = []
@@ -176,12 +177,83 @@ export function buildAnalysisBlocks(
     })
   }
 
+  // Thumbnail & title button for longform YouTube
+  if (platform === 'youtube_long' && options?.channelId && options?.threadTs) {
+    blocks.push({ type: 'divider' })
+    blocks.push({
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: ':frame_with_picture: Generate Thumbnail & Title Ideas' },
+        action_id: 'generate_thumbnails',
+        value: `${options.channelId}|${options.threadTs}`,
+        style: 'primary',
+      }],
+    })
+  }
+
   // Footer
   blocks.push({ type: 'divider' })
   blocks.push({
     type: 'context',
     elements: [{ type: 'mrkdwn', text: 'Analyzed with Claude claude-sonnet-4-6 · SocialAI' }],
   })
+
+  return blocks as KnownBlock[]
+}
+
+// ── Thought block map (longform only) ────────────────────────────────────────
+
+export function buildThoughtBlockMapBlocks(thoughtBlocks: ThoughtBlock[]): KnownBlock[] {
+  function fmtTime(seconds: number): string {
+    const m = Math.floor(seconds / 60)
+    const s = Math.floor(seconds % 60)
+    return `${m}:${s.toString().padStart(2, '0')}`
+  }
+
+  const lines = thoughtBlocks
+    .map((b) => `*${fmtTime(b.start)}–${fmtTime(b.end)}* — ${b.summary}`)
+    .join('\n')
+
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*:memo: Content Structure — ${thoughtBlocks.length} sections*\n${lines}` },
+    },
+  ] as KnownBlock[]
+}
+
+// ── Thumbnail & title ideas ───────────────────────────────────────────────────
+
+export function buildThumbnailIdeasBlocks(ideas: ThumbnailIdeas): KnownBlock[] {
+  const blocks: object[] = []
+
+  blocks.push({
+    type: 'header',
+    text: { type: 'plain_text', text: 'Thumbnail & Title Ideas' },
+  })
+
+  const titleLines = ideas.titles.map((t, i) => `${i + 1}. ${t}`).join('\n')
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: `*:pencil: Title Ideas*\n${titleLines}` },
+  })
+
+  blocks.push({ type: 'divider' })
+
+  const thumbLines = ideas.thumbnailConcepts.map((c, i) => `${i + 1}. ${c}`).join('\n')
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: `*:frame_with_picture: Thumbnail Concepts*\n${thumbLines}` },
+  })
+
+  if (ideas.abTestNote) {
+    blocks.push({ type: 'divider' })
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*:bulb: Best A/B Test*\n${ideas.abTestNote}` },
+    })
+  }
 
   return blocks as KnownBlock[]
 }

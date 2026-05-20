@@ -80,13 +80,19 @@ export interface ConversationTurn {
   timestamp: number
 }
 
+export interface ThumbnailIdeas {
+  titles: string[]
+  thumbnailConcepts: string[]
+  abTestNote: string
+}
+
 export interface ThreadSession {
   threadTs: string
   channelId: string
   platform: Platform
   analysis: MediaAnalysis
   thoughtBlocks: ThoughtBlock[]
-  editInstructions: EditInstructions
+  editInstructions: EditInstructions | null
   localFilePath: string
   conversationHistory: ConversationTurn[]
   createdAt: number

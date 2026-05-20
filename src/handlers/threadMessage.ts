@@ -57,6 +57,7 @@ export function registerThreadMessageHandler(app: App) {
     try {
       const intent = await classifyAndRespondToFollowUp(userText, {
         ...session,
+        editInstructions: session.editInstructions ?? { video_duration: 0, hook_b: { reason: '', block_sequence: [] }, hook_c: { reason: '', block_sequence: [] }, tight_cut: { block_sequence: [] } },
         conversationHistory: updatedHistory,
       })
 
@@ -75,6 +76,11 @@ export function registerThreadMessageHandler(app: App) {
           blocks,
         })
         assistantReply = intent.reasoning
+
+      } else if (intent.type === 'new_edit' && !session.editInstructions) {
+        const errText = "Custom video edits aren't available for long-form YouTube videos. You can ask how a change would affect performance instead."
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, text: errText })
+        assistantReply = errText
 
       } else if (intent.type === 'new_edit') {
         const validIndices = new Set(session.thoughtBlocks.map((b: ThoughtBlock) => b.index))

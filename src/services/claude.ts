@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { MediaAnalysis, BrandContext, EditInstructions, ThoughtBlock, ThreadSession } from '../types'
+import type { MediaAnalysis, BrandContext, EditInstructions, ThoughtBlock, ThreadSession, ThumbnailIdeas } from '../types'
 import type { TopPost } from './socialManager'
 import type { TranscriptResult } from './transcriber'
 
@@ -36,7 +36,10 @@ function buildShortFormPrompt(
     : 'You are analyzing a single image/photo.'
 
   const benchmarkNote = topPosts.length > 0
-    ? `Top ${topPosts.length} performing posts on ${platform} (benchmarks for scoring and predictions):\n${topPosts.map((p, i) => `${i + 1}. Format: ${p.format} | Score: ${p.score ?? 'N/A'} | Reach: ${p.reach.toLocaleString()} | Hook: "${p.content.slice(0, 120)}"`).join('\n')}`
+    ? `Top ${topPosts.length} performing posts on ${platform} (benchmarks for scoring and predictions):\n${topPosts.map((p, i) => {
+        const watchTime = p.average_watch_time ? ` | Avg watch: ${Math.floor(p.average_watch_time / 60)}m${p.average_watch_time % 60}s` : ''
+        return `${i + 1}. Format: ${p.format} | Reach: ${p.reach.toLocaleString()}${watchTime} | Hook: "${p.content.slice(0, 120)}"`
+      }).join('\n')}`
     : `No historical data available — use general ${platform} platform benchmarks for this niche.`
 
   const inspirationNote = inspirationAccounts.length > 0
@@ -122,8 +125,15 @@ function buildLongFormPrompt(
   inspirationAccounts: string[],
   transcript: string | null,
 ): string {
+  function fmtWatch(seconds?: number): string {
+    if (!seconds) return 'N/A'
+    const m = Math.floor(seconds / 60)
+    const s = seconds % 60
+    return s > 0 ? `${m}m${s}s` : `${m}m`
+  }
+
   const benchmarkNote = topPosts.length > 0
-    ? `Top ${topPosts.length} performing long-form posts on ${platform}:\n${topPosts.map((p, i) => `${i + 1}. Format: ${p.format} | Score: ${p.score ?? 'N/A'} | Reach: ${p.reach.toLocaleString()} | Hook: "${p.content.slice(0, 120)}"`).join('\n')}`
+    ? `Top ${topPosts.length} performing long-form videos (benchmarks for scoring and retention predictions):\n${topPosts.map((p, i) => `${i + 1}. "${p.content.slice(0, 100)}" | Views: ${p.reach.toLocaleString()} | Avg watch time: ${fmtWatch(p.average_watch_time)} | Likes: ${p.likes.toLocaleString()} | Comments: ${p.comments}`).join('\n')}`
     : `No historical data available — use general ${platform} long-form benchmarks for this niche.`
 
   const inspirationNote = inspirationAccounts.length > 0
@@ -444,11 +454,16 @@ export async function classifyAndRespondToFollowUp(
     .map((b) => `Block ${b.index} [${b.start.toFixed(1)}s–${b.end.toFixed(1)}s]: "${b.summary}"`)
     .join('\n')
 
-  const { hook_b, hook_c, tight_cut } = session.editInstructions
-
   const historyLines = session.conversationHistory.slice(-20)
     .map((t) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.content}`)
     .join('\n')
+
+  const variantsSection = session.editInstructions
+    ? `EXISTING VARIANTS:
+Hook B [blocks ${session.editInstructions.hook_b.block_sequence.join(',')}]: ${session.editInstructions.hook_b.reason}
+Hook C [blocks ${session.editInstructions.hook_c.block_sequence.join(',')}]: ${session.editInstructions.hook_c.reason}
+Tight Cut [blocks ${session.editInstructions.tight_cut.block_sequence.join(',')}]: Original order, slow parts removed`
+    : 'This is a long-form video — no short-form variants were generated. Respond to prediction and advice questions only.'
 
   const prompt = `You are a video editing assistant helping a creator iterate on their content.
 
@@ -461,10 +476,7 @@ Summary: ${session.analysis.summary}
 VIDEO STRUCTURE (thought blocks):
 ${blockList}
 
-EXISTING VARIANTS:
-Hook B [blocks ${hook_b.block_sequence.join(',')}]: ${hook_b.reason}
-Hook C [blocks ${hook_c.block_sequence.join(',')}]: ${hook_c.reason}
-Tight Cut [blocks ${tight_cut.block_sequence.join(',')}]: Original order, slow parts removed
+${variantsSection}
 
 ${historyLines ? `CONVERSATION HISTORY:\n${historyLines}\n` : ''}
 USER'S MESSAGE:
@@ -529,5 +541,83 @@ Return ONLY valid JSON (no markdown, no extra text):
   return {
     type: 'clarification',
     response: parsed.response ?? "I didn't quite understand — could you clarify what you'd like?",
+  }
+}
+
+// ── YouTube thumbnail & title ideas ──────────────────────────────────────────
+
+export async function generateThumbnailAndTitleIdeas(
+  analysis: MediaAnalysis,
+  thoughtBlocks: ThoughtBlock[],
+): Promise<ThumbnailIdeas> {
+  const client = getClient()
+
+  const blockList = thoughtBlocks
+    .map((b) => `Block ${b.index} [${b.start.toFixed(0)}s–${b.end.toFixed(0)}s]: "${b.summary}"`)
+    .join('\n')
+
+  const prompt = `You are a YouTube growth strategist specializing in CTR optimization.
+
+VIDEO ANALYSIS:
+Overall score: ${analysis.overall_score}/100
+Hook strength: ${analysis.hook_strength}/100
+Summary: ${analysis.summary}
+Strengths: ${analysis.strengths.join(' | ')}
+Key improvements: ${analysis.improvements.map((i) => i.issue).join(' | ')}
+
+CONTENT STRUCTURE:
+${blockList}
+
+Generate YouTube-optimized title and thumbnail ideas for this video.
+
+Title rules:
+- Lead with the most compelling hook or result
+- Use curiosity gaps, numbers, or stakes where natural
+- Keep under 60 characters where possible
+- Vary the angle across suggestions (different emotional triggers: curiosity, fear of missing out, achievement, surprise)
+- Do not use clickbait that the video can't deliver — base titles on what the content actually covers
+
+Thumbnail rules:
+- Describe the visual concept in one sentence — what to show, what text overlay to use
+- Each concept should work as a still image that reads at small size
+- Consider: face expression + text, before/after split, single bold claim, diagram/chart highlight
+
+Return ONLY valid JSON:
+{
+  "titles": [
+    "<title 1>",
+    "<title 2>",
+    "<title 3>",
+    "<title 4>",
+    "<title 5>"
+  ],
+  "thumbnail_concepts": [
+    "<visual concept 1 — describe subject, background, text overlay>",
+    "<visual concept 2>",
+    "<visual concept 3>"
+  ],
+  "ab_test_note": "<one sentence: which title + thumbnail pairing to test first and why — be specific about the numbers e.g. 'Title 2 + Concept 1'>"
+}`
+
+  const message = await client.messages.create({
+    model: MODEL,
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: prompt }],
+  })
+
+  const raw = message.content[0].type === 'text' ? message.content[0].text : ''
+  const jsonMatch = raw.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error('Claude did not return thumbnail ideas JSON')
+
+  const parsed = JSON.parse(jsonMatch[0]) as {
+    titles: string[]
+    thumbnail_concepts: string[]
+    ab_test_note: string
+  }
+
+  return {
+    titles: parsed.titles ?? [],
+    thumbnailConcepts: parsed.thumbnail_concepts ?? [],
+    abTestNote: parsed.ab_test_note ?? '',
   }
 }
