@@ -289,9 +289,10 @@ async function runAnalysis(
     }
   } catch (err) {
     logger.error('runAnalysis error:', err)
-    const userMessage = err instanceof Error
-      ? err.message
-      : 'Analysis failed. Please try again with a supported video or image.'
+    const raw = err instanceof Error ? err.message : ''
+    const userMessage = raw.toLowerCase().includes('json') || raw.toLowerCase().includes('timed out')
+      ? 'Analysis failed — the video may be too long or complex. Try a shorter clip.'
+      : raw || 'Analysis failed. Please try again with a supported video or image.'
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,

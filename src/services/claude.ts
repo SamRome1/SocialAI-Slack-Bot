@@ -277,23 +277,32 @@ Return ONLY valid JSON:
       "index": 0,
       "start": <number>,
       "end": <number>,
-      "summary": "<one sentence: what this block covers — e.g. 'Introduces the problem: OFFSET pagination slowing at scale'>",
-      "text": "<full transcript text for this block, concatenated>"
+      "summary": "<one sentence: what this block covers — e.g. 'Introduces the problem: OFFSET pagination slowing at scale'>"
     }
   ]
 }`
 
   const message = await client.messages.create({
     model: MODEL,
-    max_tokens: 1024,
+    max_tokens: 2048,
     messages: [{ role: 'user', content: prompt }],
   })
 
   const raw = message.content[0].type === 'text' ? message.content[0].text : ''
   const jsonMatch = raw.match(/\{[\s\S]*\}/)
   if (!jsonMatch) throw new Error('Claude did not return thought blocks JSON')
-  const parsed = JSON.parse(jsonMatch[0]) as { blocks: ThoughtBlock[] }
-  return parsed.blocks
+  const parsed = JSON.parse(jsonMatch[0]) as { blocks: Array<Omit<ThoughtBlock, 'text'>> }
+
+  // Reconstruct text from original segments rather than asking Claude to echo it back.
+  // This keeps the response compact regardless of video length.
+  return parsed.blocks.map((block) => ({
+    ...block,
+    text: transcript.segments
+      .filter((s) => s.start >= block.start - 0.1 && s.end <= block.end + 0.1)
+      .map((s) => s.text)
+      .join(' ')
+      .trim(),
+  }))
 }
 
 // ── Step 2: Choose which blocks go in each version ────────────────────────────
